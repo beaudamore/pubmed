@@ -1,0 +1,38 @@
+# Environment / secrets
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+venv/
+.venv/
+
+# Jupyter
+.ipynb_checkpoints/
+old/
+
+# Data (large files — download via scripts/clean_pubmed.py)
+data/source-raw/
+data/source-clean/
+data/training-data/
+
+# Model output
+output/
+unsloth_compiled_cache/
+_unsloth_sentencepiece_temp/
+
+# Notebook backups and copies
+*.ipynb.bak
+*copy*.ipynb
+*copy *.ipynb
+
+# IDE
+.vscode/
+.idea/

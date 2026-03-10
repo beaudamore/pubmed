@@ -1,0 +1,25 @@
+# PubMed Oncologist LoRA — Project Dependencies
+# Install: pip install -r requirements.txt
+
+# ── Data Cleaning (clean_pubmed.py) ──────────────────────────────────
+datasets>=4.3.0          # HuggingFace datasets (PubMed-Cancer-NLP, CancerGUIDE)
+pandas>=2.0.0            # DataFrame ops for CSV → JSONL conversion
+tqdm>=4.60.0             # Progress bars
+
+# ── Data Generation (notebooks/datagen/) ─────────────────────────────
+openai>=1.0.0            # AsyncOpenAI client for OpenRouter API
+nest-asyncio>=1.6.0      # Allow nested event loops in Jupyter
+tiktoken>=0.5.0          # Token counting for continuation chunking
+pysbd>=0.3.4             # Sentence boundary detection (rules-based)
+python-dotenv>=1.0.0     # Load .env file for API keys
+
+# ── Training (notebooks/loras/) ───────────────────────────────────────
+# These are installed inside the Unsloth Docker container, not locally:
+# unsloth
+# torch
+# transformers
+# trl>=0.12.0            # SFTTrainer + DPOTrainer
+# peft
+# accelerate
+# bitsandbytes
+# datasets
