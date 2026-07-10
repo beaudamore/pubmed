@@ -60,6 +60,8 @@ pubmed/
 ├── README.md
 ├── scripts/
 │   ├── clean_pubmed.py       # Download & clean source data
+│   ├── augment_tool_calling_data.py  # Restore backup data + add PubMed tool-call SFT/DPO files
+│   ├── validate_tool_calling_data.py # Validate generated tool-call message structure
 │   └── requirements.txt
 ├── notebooks/
 │   ├── datagen/
@@ -74,7 +76,11 @@ pubmed/
     │   ├── cancerguide_structured.jsonl
     │   ├── cancerguide_unstructured.jsonl
     │   └── cleaning_report.json
-    └── training-data/
+    ├── training-data-backups-before-tool-calling-augmentation/  # Original expensive datagen output
+    └── training-data/                                           # Restored + augmented by script
+      ├── pubmed_oncologist_v2_tool_sft_messages.jsonl         # Native tool-calling SFT rows
+      ├── pubmed_oncologist_v2_tool_dpo_messages.jsonl         # Tool-use preference pairs
+      ├── tool_calling_augmentation_manifest.json              # Deterministic generation manifest
         └── pubmed_oncologist_v2/
             ├── qa/                       # Raw QA per cancer type
             │   └── _checkpoints/         # Per-type round-tracking JSON
@@ -126,6 +132,37 @@ Open the datagen notebook:
 notebooks/datagen/pubmed_datagen.ipynb
 ```
 
+### 4b. Add Tool-Calling Augmentation Without Regenerating Datagen
+
+If the original expensive datagen output has been moved to:
+
+```text
+data/training-data-backups-before-tool-calling-augmentation/
+```
+
+restore it into the normal notebook path and add deterministic PubMed tool-call training files:
+
+```bash
+python3 scripts/augment_tool_calling_data.py --overwrite
+python3 scripts/validate_tool_calling_data.py
+```
+
+This step does **not** call OpenRouter, PubMed, HuggingFace, or any network service. It copies the backup data back to `data/training-data/` and derives supplemental examples that teach:
+
+```text
+biomedical evidence question -> deep_research_pubmed tool call -> tool result -> evidence-grounded answer
+```
+
+Generated files:
+
+| File | Purpose |
+| ---- | ------- |
+| `data/training-data/pubmed_oncologist_v2_tool_sft_messages.jsonl` | Native message-format tool-calling SFT examples. |
+| `data/training-data/pubmed_oncologist_v2_tool_dpo_messages.jsonl` | Preference pairs where chosen uses `deep_research_pubmed` and rejected answers directly. |
+| `data/training-data/tool_calling_augmentation_manifest.json` | Reproducibility manifest with source path, counts, seed, and output paths. |
+
+The synthetic tool results use `TRAINING-SNAPSHOT-*` identifiers instead of fabricated PMIDs when the original QA row does not carry article metadata. This is intentional: the augmentation teaches routing and tool-result synthesis, not fake citation memorization.
+
 **With the [Unsloth notebooks](https://github.com/unslothai/notebooks) Docker environment:**
 
 ```bash
@@ -140,8 +177,9 @@ docker run --gpus all \
 
 Run the training notebooks in `notebooks/loras/` (requires GPU — designed for the [Unsloth notebooks](https://github.com/unslothai/notebooks) Docker environment):
 
-1. **`pubmed_sft_training.ipynb`** — Supervised fine-tuning (run first)
-2. **`pubmed_dpo_training.ipynb`** — DPO alignment (run after SFT completes)
+1. **`pubmed_qwen3-14b-sft_training.ipynb`** — medical SFT reasoning (run first)
+2. **Tool-calling SFT notebook** — train on `pubmed_oncologist_v2_tool_sft_messages.jsonl`
+3. **`pubmed_dpo_training_v2.ipynb`** — DPO alignment after tool-calling SFT; use tool-aware DPO data or merge in `pubmed_oncologist_v2_tool_dpo_messages.jsonl`
 
 ## Environment Variables
 
@@ -156,12 +194,47 @@ Set via `.env` file (loaded by `python-dotenv`) or export directly in your shell
 ## Pipeline — Full Workflow
 
 ```text
-PubMed + CancerGUIDE  ──►  Clean  ──►  Datagen  ──►  SFT  ──►  DPO
-         HuggingFace         │               │               │         │
-                         71K JSONL     QA + anti-halluc.   LoRA     LoRA
-                                       + treatment         adapter   adapter
+PubMed + CancerGUIDE  ──►  Clean  ──►  Datagen  ──►  Tool Augment  ──►  SFT  ──►  Tool SFT  ──►  DPO
+         HuggingFace         │               │               │                 │         │            │
+                         71K JSONL     QA + anti-halluc.   local scripts      LoRA      LoRA         LoRA
+                                       + treatment          no API calls       adapter   adapter      adapter
                                        + continuation
 ```
+
+### Phase 2b: Tool-Calling Augmentation (`scripts/augment_tool_calling_data.py`)
+
+This local script preserves the existing costly datagen output and adds the missing tool-routing behavior.
+
+What it does:
+
+1. Treats `data/training-data-backups-before-tool-calling-augmentation/` as read-only source data.
+2. Recreates `data/training-data/` so the existing notebook paths keep working.
+3. Reads validated PubMed QA rows when available.
+4. Builds native message-format tool calls to `deep_research_pubmed` using the existing user question as the PubMed query.
+5. Creates synthetic PubMed-tool-shaped results from existing grounded answers, without inventing real PMIDs.
+6. Writes tool-SFT and tool-DPO JSONL files plus a manifest.
+
+Run:
+
+```bash
+python3 scripts/augment_tool_calling_data.py --overwrite
+python3 scripts/validate_tool_calling_data.py
+```
+
+By default, the script reads the active LoRA notebooks and scales tool examples from the selected training sizes. With the current Qwen3-14B notebooks, SFT has no limiter and DPO uses `DPO_MAX_PAIRS = 9000`, so the script writes 9,000 tool-SFT rows and 9,000 tool-DPO rows. Adjust the ratio or force an explicit cap with:
+
+```bash
+python3 scripts/augment_tool_calling_data.py --overwrite --tool-ratio-to-chosen 0.5 --seed 42
+python3 scripts/augment_tool_calling_data.py --overwrite --max-tool-examples 9000 --seed 42
+```
+
+The recommended retrain order is:
+
+```text
+Qwen3 base -> medical SFT -> PubMed tool-calling SFT -> tool-aware DPO
+```
+
+Do not run prose-only DPO after tool-calling SFT unless tool-use preference pairs are included, because prose-only DPO can re-strengthen the unwanted direct-answer habit.
 
 ### Phase 1: Data Cleaning (`scripts/clean_pubmed.py`)
 
@@ -341,14 +414,14 @@ Supervised fine-tuning via Unsloth 4-bit QLoRA on Qwen3-Instruct (any variant 14
 - **Design:** Self-contained "run all and walk away" notebook
 - **Output:** SFT LoRA adapter saved to `output/pubmed_oncologist_v2_sft/lora_adapters/`
 
-### Phase 4: DPO Training (`notebooks/loras/pubmed_dpo_training.ipynb`)
+### Phase 4: DPO Training (`notebooks/loras/pubmed_dpo_training_v2.ipynb`)
 
 Direct Preference Optimization that **continues training the SFT LoRA** (no new adapters stacked):
 
 - **Input:** `pubmed_oncologist_v2_dpo.jsonl` (chosen/rejected pairs)
 - **Prerequisite:** SFT LoRA must be trained first — the DPO notebook loads it from `output/pubmed_oncologist_v2_sft/lora_adapters/`
 - **Strategy:** Loads the SFT LoRA adapter and continues training the same weights with DPO loss. This produces a **single LoRA adapter** relative to base Qwen3 that contains both SFT knowledge and DPO alignment — no merging or stacking required for deployment
-- **Sampling:** `DPO_MAX_PAIRS = 5000` (adjustable) with stratified sampling by source to preserve distribution
+- **Sampling:** `DPO_MAX_PAIRS = 9000` (adjustable) with stratified sampling by source to preserve distribution
 - **Hyperparameters:** LR 5e-6 (~40× lower than SFT), beta=0.1, sigmoid loss, batch 1 × 8 = 8 effective, 1 epoch
 - **Output:** Combined SFT+DPO LoRA adapter ready for vLLM serving
 - See [DPO Details](#dpo--direct-preference-optimization) below
@@ -532,7 +605,7 @@ TRL chat-template format compatible with `DPOTrainer`:
 | `BEYOND_EVIDENCE_SAMPLE_FRACTION` | 0.30 | Fraction of chunks used |
 | `SELF_CORRECTION_SAMPLE_FRACTION` | 0.15 | Fraction of QA sampled |
 | `TEST_CHUNKS_PER_ROUND` | 0 | Set to >0 to limit chunks per round for testing |
-| `DPO_MAX_PAIRS` | 5,000 | Stratified sample of DPO pairs for training (adjustable) |
+| `DPO_MAX_PAIRS` | 9,000 | Stratified sample of DPO pairs for training (adjustable) |
 
 ---
 
@@ -560,8 +633,9 @@ To regenerate: delete the specific output file(s) and re-run the cell.
 - DPO preference pairs generated from grounding rejects + beyond-evidence + self-correction + quality gate
 
 The training notebooks then consume this generated data:
-- **SFT:** Trains on the full ShareGPT output
-- **DPO:** `DPO_MAX_PAIRS = 5000` stratified sample of preference pairs (adjustable)
+- **SFT:** Trains on the full ShareGPT output in the active Qwen3-14B SFT notebook
+- **Tool augmentation:** Defaults to the selected DPO pair count, currently 9,000 examples from `DPO_MAX_PAIRS = 9000`
+- **DPO:** `DPO_MAX_PAIRS = 9000` stratified sample of preference pairs (adjustable)
 
 ### Observed Runtime & Cost (Default Settings)
 
@@ -569,9 +643,9 @@ The training notebooks then consume this generated data:
 | ----- | -------- | ---- | ---- |
 | Datagen (full 71K records, 3 Q × 1 round) | API (Qwen3-235B via OpenRouter) | ~2–3 days | ~$330 |
 | SFT (`MAX_RECORDS = 20000`) | NVIDIA DGX Spark (128 GB) | ~40 hrs | — |
-| DPO (`DPO_MAX_PAIRS = 5000`) | NVIDIA DGX Spark (128 GB) | ~14 hrs | — |
+| DPO (`DPO_MAX_PAIRS = 9000`) | NVIDIA DGX Spark (128 GB) | ~14 hrs | — |
 
-Datagen was run on the full cleaned corpus (71K records) for the reported cost/time. `MAX_RECORDS` can optionally limit the datagen input for faster/cheaper runs. SFT trains on whatever datagen produces; `DPO_MAX_PAIRS` caps preference pairs in the DPO notebook.
+Datagen was run on the full cleaned corpus (71K records) for the reported cost/time. `MAX_RECORDS` can optionally limit the datagen input for faster/cheaper runs. SFT trains on whatever datagen produces in the active Qwen3-14B notebook; `DPO_MAX_PAIRS` caps preference pairs in the DPO notebook, and tool augmentation follows that selected pair count unless overridden.
 
 ### Scaling Up
 

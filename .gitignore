@@ -19,9 +19,7 @@ venv/
 old/
 
 # Data (large files — download via scripts/clean_pubmed.py)
-data/source-raw/
-data/source-clean/
-data/training-data/
+data/
 
 # Model output
 output/
