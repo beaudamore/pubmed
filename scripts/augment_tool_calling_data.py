@@ -439,12 +439,16 @@ def make_tool_dpo_row(example: ToolExample) -> dict[str, Any]:
 def collect_examples(source_dir: Path, max_examples: int, seed: int) -> list[ToolExample]:
     """Collect bounded examples from validated QA first, falling back to top-level SFT."""
     candidate_files = sorted((source_dir / DATASET_NAME / "qa_validated").glob("*.jsonl"))
-    if not candidate_files:
-        candidate_files = [source_dir / ORIGINAL_SFT_FILENAME]
+    guide_files = sorted((source_dir / DATASET_NAME / "cancerguide_reasoning").glob("*.jsonl"))
+    
+    # Merge both PubMed and Microsoft CancerGUIDE candidate sources
+    all_files = candidate_files + guide_files
+    if not all_files:
+        all_files = [source_dir / ORIGINAL_SFT_FILENAME]
 
     # Group potential candidates by their source file/type
     by_file_examples = {}
-    for path in candidate_files:
+    for path in all_files:
         if not path.exists():
             continue
           
