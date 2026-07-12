@@ -59,45 +59,38 @@ TOOL_SFT_FILENAME = f"{DATASET_NAME}_tool_sft_messages.jsonl"
 TOOL_DPO_FILENAME = f"{DATASET_NAME}_tool_dpo_messages.jsonl"
 MANIFEST_FILENAME = "tool_calling_augmentation_manifest.json"
 
-TOOL_NAME = "deep_research_pubmed"
-TOOL_DESCRIPTION = (
-    "Search PubMed for biomedical literature, archive new articles into the "
-    "OpenWebUI knowledge base, and return article details including PMID, title, "
-    "authors, DOI, abstract, entities, keywords, and storage summary. Use this "
-    "before answering biomedical literature, oncology, clinical evidence, trial, "
-    "biomarker, mechanism, treatment, guideline, or PubMed-style questions."
-)
-
-TOOL_SPEC = {
-    "type": "function",
-    "function": {
-        "name": TOOL_NAME,
-        "description": TOOL_DESCRIPTION,
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "The biomedical literature search query to run in PubMed.",
-                }
-            },
-            "required": ["query"],
-        },
+RANDOM_TOOLS = [
+    {
+        "name": "deep_research_pubmed",
+        "description": "Search PubMed database for biomedical literature, trials, and journals. Use before answering medical queries.",
+        "query_desc": "The PubMed search query text."
     },
-}
-
-TOOL_ROUTING_SYSTEM_APPENDIX = f"""
-
-TOOL USE POLICY:
-- You have access to the `{TOOL_NAME}` tool.
-- For biomedical literature, oncology, clinical evidence, trial, biomarker,
-  mechanism, treatment, guideline, or PubMed-style questions, call `{TOOL_NAME}`
-  before answering.
-- When you call `{TOOL_NAME}`, do not answer in the same assistant turn. Wait for
-  the tool result, then synthesize the answer from the returned evidence.
-- Do not invent PMIDs, trial names, statistics, guideline statements, or article
-  details. If the tool result is incomplete, say what remains uncertain.
-""".rstrip()
+    {
+        "name": "clinical_trials_api",
+        "description": "Search clinical trial protocols and registered study recruitment data. Use to find trial arms.",
+        "query_desc": "The indication, phase, or compound query."
+    },
+    {
+        "name": "oncology_guidelines_db",
+        "description": "Retrieve official oncology clinical practice guidelines and recommendations. Use to find treatment pathways.",
+        "query_desc": "The tumor, stage, or line of treatment query."
+    },
+    {
+        "name": "biomed_evidence_search",
+        "description": "Retrieve published articles, literature reviews, and evidence cards. Use to find biochemical mechanisms.",
+        "query_desc": "The gene target, mutation, or pathway query."
+    },
+    {
+        "name": "medline_lookup",
+        "description": "Query the MEDLINE biomedical bibliographic database for references. Use to find specific author abstract summaries.",
+        "query_desc": "The citation query string."
+    },
+    {
+        "name": "cancer_drug_registry",
+        "description": "Search standard chemotherapeutic drug indices for indications, interactions, and profile data.",
+        "query_desc": "The drug nomenclature or class name."
+    }
+]
 
 
 @dataclass(frozen=True)
@@ -113,6 +106,10 @@ class ToolExample:
     query: str
     tool_result: str
     call_id: str
+    tool_name: str
+    tool_spec: dict[str, Any]
+    system_appendix: str
+    use_tool: bool  # added to indicate if it should use tool or answer directly
 
 
 def iter_jsonl(path: Path) -> Iterable[dict[str, Any]]:
@@ -174,51 +171,26 @@ def selected_count(total_rows: int, cap: int | None) -> int:
 def resolve_tool_example_limit(
     source_dir: Path,
     max_tool_examples: int | None,
-    tool_ratio_to_chosen: float,
-    sft_notebook: Path,
-    dpo_notebook: Path,
-) -> tuple[int, dict[str, Any]]:
-    """Choose tool-call row count from the same sample limits as the notebooks.
+) -> int:
+    """Resolve tool example cap limit.
 
-    By default, tool-call examples track the selected DPO pair count. For the
-    active Qwen3-14B notebook this reads `DPO_MAX_PAIRS = 9000`, so the script
-    emits 9,000 tool-SFT rows and 9,000 tool-DPO rows unless overridden.
+    If no explicit limit is provided, it processes the entire available validated corpus.
+    There is no dynamic notebook-file parsing to enforce cross-stage dependencies.
     """
-    if tool_ratio_to_chosen <= 0:
-        raise ValueError(f"--tool-ratio-to-chosen must be positive, got {tool_ratio_to_chosen}")
-
-    sft_total = count_jsonl_rows(source_dir / ORIGINAL_SFT_FILENAME)
-    dpo_total = count_jsonl_rows(source_dir / ORIGINAL_DPO_FILENAME)
-    sft_cap = read_notebook_int_constant(sft_notebook, "SFT_MAX_EXAMPLES")
-    dpo_cap = read_notebook_int_constant(dpo_notebook, "DPO_MAX_PAIRS")
-    sft_selected = selected_count(sft_total, sft_cap)
-    dpo_selected = selected_count(dpo_total, dpo_cap)
+    total_valid = sum(
+        count_jsonl_rows(p) 
+        for p in sorted((source_dir / DATASET_NAME / "qa_validated").glob("*.jsonl")) 
+        if p.exists()
+    )
 
     if max_tool_examples is None:
-        requested = round(dpo_selected * tool_ratio_to_chosen)
-        reason = "auto_scaled_from_dpo_selected_pairs"
+        resolved = total_valid
     else:
         if max_tool_examples <= 0:
             raise ValueError(f"--max-tool-examples must be positive when provided, got {max_tool_examples}")
-        requested = max_tool_examples
-        reason = "explicit_max_tool_examples"
+        resolved = max_tool_examples
 
-    resolved = max(1, min(requested, sft_selected))
-    details = {
-        "limit_reason": reason,
-        "tool_ratio_to_chosen": tool_ratio_to_chosen,
-        "sft_notebook": str(sft_notebook),
-        "dpo_notebook": str(dpo_notebook),
-        "sft_total_rows": sft_total,
-        "sft_max_examples": sft_cap,
-        "sft_selected_rows": sft_selected,
-        "dpo_total_rows": dpo_total,
-        "dpo_max_pairs": dpo_cap,
-        "dpo_selected_pairs": dpo_selected,
-        "requested_tool_examples": requested,
-        "resolved_tool_examples": resolved,
-    }
-    return resolved, details
+    return resolved
 
 
 def stable_id(*parts: str, prefix: str = "call") -> str:
@@ -283,6 +255,26 @@ def extract_conversation_parts(row: dict[str, Any]) -> tuple[str, str, str] | No
     return system_prompt, user_text, assistant_text
 
 
+TEMPORAL_MODIFIERS = [
+    "What are the latest clinical trial developments for {query}?",
+    "Could you provide the most recent clinical guidelines or recommendations since 2025 regarding {query}?",
+    "What is the newly approved therapeutic consensus or recent data regarding {query}?",
+    "Are there any novel research updates or recent literature findings on {query}?",
+    "According to updated treatment pipelines and recent clinical insights, what is recommended for {query}?",
+    "What are the current, up-to-date trial responses and latest evidence for {query}?",
+    "Could you search for the latest therapeutic advancements and recent outcomes for {query}?"
+]
+
+STATIC_MODIFIERS = [
+    "What is the standard biological staging and diagnostic definition of {query}?",
+    "Could you explain the baseline molecular mechanism and pathway characteristics of {query}?",
+    "What is the biochemical cellular structure and traditional framework of {query}?",
+    "What physiological dynamics and established academic classification systems define {query}?",
+    "Can you detail the underlying genetic mutation properties and fixed clinical staging of {query}?",
+    "What are the traditional pathophysiological properties and mechanistic stages of {query}?",
+    "Explain the established molecular pathways and academic baseline details for {query}."
+]
+
 def build_pubmed_query(question: str, cancer_type: str) -> str:
     """Build a compact deterministic PubMed query from the existing question.
 
@@ -292,13 +284,15 @@ def build_pubmed_query(question: str, cancer_type: str) -> str:
     """
     question = re.sub(r"\s+", " ", question).strip()
     question = re.sub(r"[?]+$", "", question).strip()
+    # Strip any common question prefixes so the query itself is a clean biomedical concept search
+    question = re.sub(r"^(what (is|are)|could you explain|can you detail|explain the|how does|does the|why does|are there)\s+", "", question, flags=re.IGNORECASE)
     cancer_label = normalize_cancer_type(cancer_type)
     if cancer_label.lower() not in question.lower():
         question = f"{question} {cancer_label}"
     return question[:350]
 
 
-def build_tool_result(example_index: int, question: str, answer: str, cancer_type: str) -> str:
+def build_tool_result(example_index: int, query: str, answer: str, cancer_type: str, tool_name: str) -> str:
     """Create a PubMed-tool-shaped result from existing grounded answer text.
 
     Many validated QA rows no longer carry the original PMID/title/abstract. Rather
@@ -310,14 +304,15 @@ def build_tool_result(example_index: int, question: str, answer: str, cancer_typ
     excerpt = first_sentence_window(answer)
     cancer_label = normalize_cancer_type(cancer_type)
     pseudo_pmid = f"TRAINING-SNAPSHOT-{example_index:06d}"
+    header_title = tool_name.replace("_", " ").title()
     return "\n".join(
         [
-            f"🔬 **PubMed Deep Research Results** — {question}",
+            f"🔬 **{header_title} Results** — {query}",
             "",
-            "**Training Snapshot Notice**: This tool result was synthesized from the existing validated PubMed oncology training corpus. It is for tool-calling alignment only and does not assert a real PMID unless one is shown explicitly.",
+            "**Training Snapshot Notice**: This tool result was synthesized from the existing validated PubMed oncology training corpus. It is for tool-calling alignment only and does not assert a real identifier unless one is shown explicitly.",
             "",
             "--- **Article Details** ---",
-            f"Search Query: {question}",
+            f"Search Query: {query}",
             "Retrieved At (UTC): synthetic-training-snapshot",
             "Total Articles Found: 1",
             "Articles in Report: 1 (of 1)",
@@ -337,10 +332,11 @@ def build_tool_result(example_index: int, question: str, answer: str, cancer_typ
 def make_tool_sft_row(example: ToolExample) -> dict[str, Any]:
     """Create one native message-format tool-calling SFT row."""
     system_prompt = (example.system_prompt or "You are a clinical oncologist.").rstrip()
-    system_prompt = f"{system_prompt}\n{TOOL_ROUTING_SYSTEM_APPENDIX}"
-    arguments = json.dumps({"query": example.query}, ensure_ascii=False)
-    return {
-        "messages": [
+    system_prompt = f"{system_prompt}\n{example.system_appendix}"
+    
+    if example.use_tool:
+        arguments = json.dumps({"query": example.query}, ensure_ascii=False)
+        messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": example.question},
             {
@@ -350,20 +346,30 @@ def make_tool_sft_row(example: ToolExample) -> dict[str, Any]:
                     {
                         "id": example.call_id,
                         "type": "function",
-                        "function": {"name": TOOL_NAME, "arguments": arguments},
+                        "function": {"name": example.tool_name, "arguments": arguments},
                     }
                 ],
             },
             {
                 "role": "tool",
                 "tool_call_id": example.call_id,
-                "name": TOOL_NAME,
+                "name": example.tool_name,
                 "content": example.tool_result,
             },
             {"role": "assistant", "content": example.answer},
-        ],
-        "tools": [TOOL_SPEC],
-        "source": "tool_calling_augmentation",
+        ]
+    else:
+        # Direct answer example: same tools are available, but answer directly
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": example.question},
+            {"role": "assistant", "content": example.answer},
+        ]
+
+    return {
+        "messages": messages,
+        "tools": [example.tool_spec],
+        "source": "tool_calling_augmentation" if example.use_tool else "direct_response_with_tools_available",
         "source_file": example.source_file,
         "source_index": example.source_index,
         "cancer_type": example.cancer_type,
@@ -373,23 +379,57 @@ def make_tool_sft_row(example: ToolExample) -> dict[str, Any]:
 def make_tool_dpo_row(example: ToolExample) -> dict[str, Any]:
     """Create one tool-use preference pair.
 
-    The chosen side teaches the complete tool path. The rejected side intentionally
-    answers directly without calling the PubMed tool. That contrast targets the
-    exact failure mode observed in OpenWebUI: the model can answer, but skips the
-    available PubMed research tool unless explicitly told to use it.
+    If use_tool is True, the chosen side is tool calling and the rejected side is direct response.
+    If use_tool is False, the chosen side is direct response and the rejected side is tool calling.
+    This bidirectional comparison teaches the model exactly when to call and when not to call.
     """
-    chosen = make_tool_sft_row(example)["messages"]
-    system_prompt = chosen[0]["content"]
-    rejected = [
+    system_prompt = (example.system_prompt or "You are a clinical oncologist.").rstrip()
+    system_prompt = f"{system_prompt}\n{example.system_appendix}"
+    arguments = json.dumps({"query": example.query}, ensure_ascii=False)
+
+    tool_call_msgs = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": example.question},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": example.call_id,
+                    "type": "function",
+                    "function": {"name": example.tool_name, "arguments": arguments},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": example.call_id,
+            "name": example.tool_name,
+            "content": example.tool_result,
+        },
+        {"role": "assistant", "content": example.answer},
+    ]
+
+    direct_msgs = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": example.question},
         {"role": "assistant", "content": example.answer},
     ]
+
+    if example.use_tool:
+        chosen = tool_call_msgs
+        rejected = direct_msgs
+        source_label = "tool_calling_augmentation_direct_answer_reject"
+    else:
+        chosen = direct_msgs
+        rejected = tool_call_msgs
+        source_label = "direct_answer_augmentation_tool_call_reject"
+
     return {
         "chosen": chosen,
         "rejected": rejected,
-        "tools": [TOOL_SPEC],
-        "source": "tool_calling_augmentation_direct_answer_reject",
+        "tools": [example.tool_spec],
+        "source": source_label,
         "source_file": example.source_file,
         "source_index": example.source_index,
         "cancer_type": example.cancer_type,
@@ -402,13 +442,13 @@ def collect_examples(source_dir: Path, max_examples: int, seed: int) -> list[Too
     if not candidate_files:
         candidate_files = [source_dir / ORIGINAL_SFT_FILENAME]
 
-    rng = random.Random(seed)
-    rng.shuffle(candidate_files)
-
-    examples: list[ToolExample] = []
+    # Group potential candidates by their source file/type
+    by_file_examples = {}
     for path in candidate_files:
         if not path.exists():
             continue
+          
+        file_examples = []
         for row_index, row in enumerate(iter_jsonl(path), start=1):
             parts = extract_conversation_parts(row)
             if not parts:
@@ -417,27 +457,104 @@ def collect_examples(source_dir: Path, max_examples: int, seed: int) -> list[Too
             cancer_type = row.get("cancer_type") or path.stem
             query = build_pubmed_query(question, cancer_type)
             call_id = stable_id(path.name, str(row_index), question, prefix="call_pubmed")
-            tool_result = build_tool_result(len(examples) + 1, query, answer, cancer_type)
-            examples.append(
-                ToolExample(
-                    source_index=row_index,
-                    source_file=str(path.relative_to(source_dir)),
-                    cancer_type=cancer_type,
-                    question=question,
-                    answer=answer,
-                    system_prompt=system_prompt,
-                    query=query,
-                    tool_result=tool_result,
-                    call_id=call_id,
-                )
-            )
-            if max_examples > 0 and len(examples) >= max_examples:
-                rng.shuffle(examples)
-                return examples
+            
+            file_examples.append({
+                "row_index": row_index,
+                "path": path,
+                "cancer_type": cancer_type,
+                "question": question,
+                "answer": answer,
+                "system_prompt": system_prompt,
+                "query": query,
+                "call_id": call_id,
+            })
+            
+        if file_examples:
+            # Deterministically shuffle the candidate queue within each type first
+            rng = random.Random(seed + len(file_examples))
+            rng.shuffle(file_examples)
+            by_file_examples[path.name] = file_examples
 
+    total_types = len(by_file_examples)
+    if total_types == 0:
+        raise RuntimeError("No source examples found for tool-calling augmentation.")
+
+    # Calculate exact limit per cancer type
+    samples_per_type = max_examples // total_types
+    remainder = max_examples % total_types
+
+    balanced_raw = []
+    keys = sorted(by_file_examples.keys())
+    
+    # Extract matching number from each type first, dealing with remainder deterministically
+    for idx, k in enumerate(keys):
+        # If this index is less than remainder, it gets an extra 1 from the remainder
+        cap = samples_per_type + (1 if idx < remainder else 0)
+        # Take up to the cap or total available
+        balanced_raw.extend(by_file_examples[k][:cap])
+
+    # Convert balanced selections into formatted ToolExample records using rotating tools
+    # Alternating 50/50 between use_tool=True and use_tool=False deterministically
+    examples = []
+    for i, item in enumerate(balanced_raw):
+        # 50% use tool, 50% answer directly
+        use_tool = (i % 2 == 0)
+        
+        # Rewrite the question semantically based on gating intent
+        cleaned_query_concept = item["query"]
+        if use_tool:
+            # Inject time-sensitive/recent-findings modifiers for tool paths
+            modifier = TEMPORAL_MODIFIERS[i % len(TEMPORAL_MODIFIERS)]
+            rewritten_question = modifier.format(query=cleaned_query_concept)
+        else:
+            # Inject static/biological mechanism modifiers for direct textbook paths
+            modifier = STATIC_MODIFIERS[i % len(STATIC_MODIFIERS)]
+            rewritten_question = modifier.format(query=cleaned_query_concept)
+        
+        tool_idx = i % len(RANDOM_TOOLS)
+        t_conf = RANDOM_TOOLS[tool_idx]
+        t_name = t_conf["name"]
+        t_spec = {
+            "type": "function",
+            "function": {
+                "name": t_name,
+                "description": t_conf["description"],
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "query": {
+                            "type": "string",
+                            "description": t_conf["query_desc"],
+                        }
+                    },
+                    "required": ["query"],
+                },
+            },
+        }
+        t_sys = f"\n\nTOOL USE POLICY:\n- You have access to the `{t_name}` tool.\n- For biomedical literature, oncology, clinical evidence, trial, biomarker, mechanism, treatment, guideline, or PubMed-style questions, call `{t_name}` before answering.\n- When you call `{t_name}`, do not answer in the same assistant turn. Wait for the tool result, then synthesize the answer from the returned evidence.\n- Do not invent PMIDs, trial names, statistics, guideline statements, or article details. If the tool result is incomplete, say what remains uncertain.\n"
+        
+        tool_result = build_tool_result(i + 1, item["query"], item["answer"], item["cancer_type"], t_name)
+        examples.append(
+            ToolExample(
+                source_index=item["row_index"],
+                source_file=str(item["path"].relative_to(source_dir)),
+                cancer_type=item["cancer_type"],
+                question=rewritten_question, # Use semantically balanced, rewritten questions
+                answer=item["answer"],
+                system_prompt=item["system_prompt"],
+                query=item["query"],
+                tool_result=tool_result,
+                call_id=item["call_id"],
+                tool_name=t_name,
+                tool_spec=t_spec,
+                system_appendix=t_sys,
+                use_tool=use_tool,
+            )
+        )
+
+    # Shuffle the final balanced subset to avoid chunk clustering of cancer types during batch packing
+    rng = random.Random(seed)
     rng.shuffle(examples)
-    if max_examples > 0:
-        examples = examples[:max_examples]
     return examples
 
 
@@ -455,7 +572,7 @@ def copy_backup_tree(source_dir: Path, output_dir: Path, overwrite: bool) -> Non
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Restore PubMed training data and add deterministic tool-calling augmentation files."
+         description="Restore PubMed training data and add deterministic tool-calling augmentation files."
     )
     parser.add_argument("--source-dir", type=Path, default=DEFAULT_BACKUP_DIR)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
@@ -463,16 +580,8 @@ def main() -> int:
         "--max-tool-examples",
         type=int,
         default=None,
-        help="Explicit tool example cap. By default this is derived from DPO_MAX_PAIRS in the DPO notebook.",
+        help="Explicit tool example cap limit. If omitted, generates entire balanced corpus.",
     )
-    parser.add_argument(
-        "--tool-ratio-to-chosen",
-        type=float,
-        default=1.0,
-        help="Tool examples per selected DPO pair when --max-tool-examples is not set. Default: 1.0.",
-    )
-    parser.add_argument("--sft-notebook", type=Path, default=DEFAULT_SFT_NOTEBOOK)
-    parser.add_argument("--dpo-notebook", type=Path, default=DEFAULT_DPO_NOTEBOOK)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
@@ -486,19 +595,14 @@ def main() -> int:
     if not (source_dir / ORIGINAL_DPO_FILENAME).exists():
         raise FileNotFoundError(f"Missing original DPO file: {source_dir / ORIGINAL_DPO_FILENAME}")
 
-    tool_example_limit, limit_details = resolve_tool_example_limit(
+    tool_example_limit = resolve_tool_example_limit(
         source_dir=source_dir,
         max_tool_examples=args.max_tool_examples,
-        tool_ratio_to_chosen=args.tool_ratio_to_chosen,
-        sft_notebook=args.sft_notebook.resolve(),
-        dpo_notebook=args.dpo_notebook.resolve(),
     )
 
     print(f"Restoring original training data from: {source_dir}")
     print(f"Writing active training data to:       {output_dir}")
-    print(f"Tool example limit:                   {tool_example_limit:,} ({limit_details['limit_reason']})")
-    print(f"  SFT selected rows:                  {limit_details['sft_selected_rows']:,}")
-    print(f"  DPO selected pairs:                 {limit_details['dpo_selected_pairs']:,}")
+    print(f"Tool example limit:                   {tool_example_limit:,}")
     copy_backup_tree(source_dir, output_dir, overwrite=args.overwrite)
 
     print("Collecting deterministic tool-calling examples...")
@@ -518,9 +622,8 @@ def main() -> int:
         "original_dpo_file": str(output_dir / ORIGINAL_DPO_FILENAME),
         "tool_sft_file": str(tool_sft_path),
         "tool_dpo_file": str(tool_dpo_path),
-        "tool_name": TOOL_NAME,
+        "tool_names_used": [t["name"] for t in RANDOM_TOOLS],
         "tool_examples": len(examples),
-        "limit_details": limit_details,
         "sft_rows_written": sft_count,
         "dpo_rows_written": dpo_count,
         "seed": args.seed,
