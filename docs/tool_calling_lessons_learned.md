@@ -30,6 +30,10 @@ However, during supervised fine-tuning (SFT):
 * **What We Did Wrong:** When capping the dataset budget to optimize training time (e.g., slicing to 5,000 examples), the generator script collected examples sequentially from category directories and exited once the limit was reached.
 * **The Result:** Sequential slicing starved the latter half of our oncology classes. The model trained heavily on Breast, Colon, and Brain cancers, but had zero representation for Lung, Kidney, Gastric, or Prostate cancers. This imbalanced dataset severely weakened the model's specializations across other oncology subjects.
 
+### Failure Mode 4: Silent Exclusion of Sibling Datasources (The Sibling Folder Trap)
+* **What We Did Wrong:** The original raw project data relied on two distinct, independent pipelines: PubMed oncology abstracts and Microsoft's **CancerGUIDE** patient treatment case studies. Because the CancerGUIDE files were stored under a separate sibling directory (`cancerguide_reasoning/`), the dataset generator was hardcoded to only compile paths located inside the sequential `qa_validated/` folder.
+* **The Result:** Microsoft's CancerGUIDE dataset was silently completely ignored during augmentation. The model was trained 100% on abstract literature queries, losing major clinical exposure to actual patient case histories and chemotherapy recommendations.
+
 ---
 
 ## The Solution: Strata-Balanced 50/50 Multi-Tool Generation
@@ -38,8 +42,9 @@ To force the model to behave like an intelligent, selective agent on deployment,
 
 ```mermaid
 graph TD
-    A[Raw Oncology Backup JSONLs] --> B[Group by Oncology Category]
-    B --> C[Stratified Samples: 10 Types x 500 Rows]
+    A1[Raw PubMed Backup JSONLs] --> B[Group All Candidate Folders]
+    A2[Raw Microsoft CancerGUIDE JSONLs] --> B
+    B --> C[Stratified Samples: 11 categories x 454 Rows]
     C --> D[50/50 Behavior Partition]
     D -->|2,500 Rows| E[Tool-Calling Turn SFT]
     D -->|2,500 Rows| F[Direct Response Turn SFT]
@@ -50,11 +55,19 @@ graph TD
     I --> J[Deterministically Shuffle and Save SFT JSONL]
 ```
 
-### 1. Stratified Equal Sampling
-The script now partitions raw, validated datasets by their cancer type first. It calculates:
-$$\text{Samples per Cancer Type} = \frac{\text{Total Target Sample Limit}}{\text{Total Number of Categories}}$$
+### 1. Multi-Source Stratified Equal Sampling
+The script now dynamically scans, combines, and merges candidates from **both independent pipelines** (the 10 files in `qa_validated/` + the 1 file in `cancerguide_reasoning/`):
+```python
+candidate_files = sorted((source_dir / DATASET_NAME / "qa_validated").glob("*.jsonl"))
+guide_files = sorted((source_dir / DATASET_NAME / "cancerguide_reasoning").glob("*.jsonl"))
 
-With a 5,000 SFT ceiling split across 10 cancer types, the script selectively pulls exactly **500 balanced rows per cancer category** to preserve equal training coverage.
+# Dynamically merge candidate file pools
+all_files = candidate_files + guide_files
+```
+It divides your target maximum cap evenly among all **11 registered categories**:
+$$\text{Samples drawn per category} = \frac{\text{Total Target Sample Limit}}{11}$$
+
+This guarantees that Microsoft's CancerGUIDE is fully integrated into training and given identical, balanced representational density with the PubMed files (exactly 91 rows of each per 1,000 sample cap).
 
 ### 2. Multi-Tool Diversity (Breaking string memorization)
 We registered **6 dynamic, realistic oncology tools** inside the generator:
