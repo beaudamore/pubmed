@@ -42,6 +42,41 @@ This leaves **~64 GB of unallocated unified RAM headroom** on the DGX.
 2. **LoRA Parameter Scaling:**
    If we freeze the SigLIP vision tower and the cross-attention projection layers (only training the LLM decoder's attention sub-layers), memory usage remains very stable. However, if we must tune the image projection heads or freeze fewer layers to adapt the vision encoder to greyscale clinical scans (e.g., MRI/CT tissues, which look fundamentally different from natural-domain images), LoRA trainable weights will scale.
 
+## 2.5 Sequence Length Scaling & Token Packing Mathematics
+
+When transitioning from baseline parameters into highly structured multimodal datasets, the selection of `MAX_SEQ_LENGTH` introduces a fascinating mathematical shift in the SFT training structure. 
+
+### Why Steps Decreased from 96 to 24 (The Token Packing Math)
+In our text-only baseline fine-tuning passes, we leverage a high-performance **Manual Sequence Packing** algorithm. Instead of feeding multi-turn conversations one-by-one—which introduces massive padding wastes—the dataset is parsed, tokenized, concatenated with `<eos>` separation tokens, and sliced into consecutive block-chunks of exactly `MAX_SEQ_LENGTH`.
+
+* **At 4,096 tokens (`v2` Standard Context Length)**:
+  * A 1000-sample raw dataset is tokenized and packed into **761 continuous blocks** of exactly 4,096 tokens.
+  * With an effective batch size of $8$ ($2 \text{ batch} \times 4 \text{ grad\_accum}$), the training length is:
+  $$\text{Steps} = \frac{761 \text{ packed blocks}}{8 \text{ batch size}} \approx 96 \text{ steps}$$
+* **At 16,384 tokens (`v3` High-Context Length)**:
+  * The context width increases by exactly **$4\times$**. 
+  * The identical token pool is chopped into blocks that are $4\times$ wider, resulting in $4\times$ fewer total blocks on disk: **~190 blocks of 16,384 tokens**.
+  * With the same effective batch size of 8:
+  $$\text{Steps} = \frac{190 \text{ packed blocks}}{8 \text{ batch size}} \approx 24 \text{ steps}$$
+
+### The Water Bucket Analogy (Self-Edification & RAM Limits)
+To visualize how hardware memory maps to this scaling behavior, we can use the **Water Bucket Analogy**:
+* **The "Water Pool":** Represents your total dataset tokens (e.g., approximately ~3.1 million tokens on disk).
+* **The "Bucket Size":** Represents your sequence context limit (`MAX_SEQ_LENGTH`).
+* **The "Number of Trips":** Represents the total number of training steps (96 trips with the 4K bucket versus 24 trips with the 16K bucket).
+* **The "Physical Back-Strain (Required Effort)":** Represents the active **activation memory** allocation (in RAM) required to hold that bucket while taking a step.
+
+With a larger context (a bigger bucket), you carry much more water on each individual trip. This means you need fewer total trips (steps) to transfer the entire pool of water. 
+
+Crucially, **the physical weight of the bucket is strictly governed and limited by your available RAM.** 
+* A 16K bucket uses **~100 GB** of your 128 GB Unified HBM/RAM pool on the DGX.
+* Pushing past this to a **24K bucket** would cause the weight (activation footprint) to break the 128 GB threshold limit, spilling the water and causing an immediate Out-Of-Memory (OOM) system crash. Therefore, the sequence limit must be carefully engineered to match your hardware's exact physical RAM pools.
+
+### The Multi-Hop Training Consequence
+Although the step count decreases from 96 to 24, the actual training signal is not diluted. **One step in v3 does the identical cognitive and weight-updating work as four sequential steps in v2.** 
+
+The key difference is attention availability: at 16K context, the model’s Flash Attention 2 matrices can evaluate multi-abstract papers and verbose reasoning blocks simultaneously without having the attention boundaries cut off mid-thought by a standard 4K hardware limit. This $4\times$ expansion scales active RAM allocation from **~60 GB up to ~100 GB** on our 128 GB unified memory architectures, which remains stable and highly optimized.
+
 ### DeepSpeed Activation Offloading: The Unified Memory Fallacy
 On a standard system with separate discrete GPUs and host CPUs (e.g., matching a typical x86 server with an H100 GPU and AMD EPYC CPU), DeepSpeed activation offloading (to host system RAM) is highly advantageous. It shifts activation tensors from a cramped pool of visual card VRAM (e.g., 24GB/80GB) into a massive system RAM buffer (e.g., 512GB/1TB).
 

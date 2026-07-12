@@ -1,0 +1,69 @@
+version: '3.8'
+# Optimized for DGX Spark 128GB unified memory
+# ~30GB allocation (0.25 × 128GB) - adjust as needed for FP16
+# ~8GB allocation (0.06 × 128GB) - leaves room for many concurrent models
+services:
+  vllm-qwen3-14b:
+    image: vllm/vllm-openai:latest
+    container_name: vllm-medgemma-27b
+    runtime: nvidia
+   
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=0
+      - CUDA_VISIBLE_DEVICES=0
+   
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              device_ids: ['0']
+              capabilities: [gpu, compute, utility]
+   
+    volumes:
+      - /home/spark/projects/training:/training
+      - /home/spark/docker-compose-files/logs/dgx-medgemma-27b:/logs
+      - /home/spark/.cache/huggingface:/models
+   
+    ports:
+      - "8002:8000"
+   
+    shm_size: '2gb'
+   
+    command: >
+      unsloth/medgemma-27b-text-it-unsloth-bnb-4bit
+      --download-dir /models
+      --served-model-name MedGemma-27b
+      --max-lora-rank 32
+      --enable-lora
+      --lora-modules Oncologist_sft=/training/pubmed/output/v3/pubmed_oncologist_v3_medgemma_sft/lora_adapters
+      --gpu-memory-utilization 0.5
+      --max-model-len 16384
+      --max-num-batched-tokens 16384
+      --kv-cache-memory-bytes 20G
+      --kv-cache-dtype fp8
+      --max-num-seqs 4
+      --port 8000
+      --host 0.0.0.0
+      --dtype auto
+      --enable-auto-tool-choice
+      --enable-chunked-prefill
+      --tool-call-parser hermes
+   
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 180s
+   
+    restart: unless-stopped
+   
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "20m"
+        max-file: "2"
+networks:
+  default:
+    name: vllm-dgx-medgemma-network

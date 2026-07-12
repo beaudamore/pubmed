@@ -140,4 +140,25 @@ Ensure the generated notebook contains the following cells and structures in ord
 - Apply stratified equal category constraints (equal counts of Bone, Stomach, Breast, Ovarian, etc.).
 - Convert outputs to standard ShareGPT list shapes: `[{"from": "system/human/gpt", "value": "..."}]`.
 - Deterministically shuffle, pack, and export clean, packed files ready for Unsloth fine-tuning.
+
+---
+
+## YouTube Video Tutorial Checkpoints: What to Cover & How to Demo
+
+To guide your recording flow, here is the technical sequence to build your narration around for a world-class YouTube tutorial:
+
+### Part 1: Crucial Failures (The Intro Hooks)
+* **The "Puppet Model" Failure (Always Calling Tools):** Show how training pure tool calls completely ruins the model's confidence. At inference, it will call tools for trivial things it already knows, completely paralyzing its parameters unless coerced. Reconstruct how we solved this by introducing a strict 50% non-tool-calling fallback path natively.
+* **The "Locked Suffix" Failure (Tool Name Hardcoding):** Demonstrate how using a single hardcoded tool name (`deep_research_pubmed`) causes the model's self-attention to just memorize the text, completely blinding it to other user-declared tools at runtime. Detail how we broke this by deterministic multi-schema rotation across 6 professional tools.
+
+### Part 2: Advanced Data Engineering Demos
+* **The Raw vs. Quality-Gate Difference:** Walk through the massive distinction between raw datagen dumps (which contain over **73,463 raw entries**) and your clean, validated golden set (exactly **19,293 rows**). Explain how LLM-as-a-judge audits screen for hallucinated claims, missing reasoning thoughts, or formatting gaps, ensuring SFT only updates correct clinician reasoning pathways.
+* **Proportional Stratified Sampling:** Walk through the code block pulling exactly the same density of samples from your 11 files (10 PubMed research types + 1 Microsoft CancerGUIDE patient registry folder) to mathematically protect category representation.
+* **Temporal Cognitive Gating (Semantic Intent Gating):** Explain how you taught the model to act as a dynamic gate classifier. Demonstrate the mapping of time-sensitive headers (`TEMPORAL_MODIFIERS`) to tool triggers, while mapping biological definition headers (`STATIC_MODIFIERS`) to direct parametric responses.
+
+### Part 3: Live UI & Deployment Integration Walkthroughs
+* **The "HTML Escaping" Rendering Paradox:** Open your browser and show why the collapsible thinking accordion breaks natively in OpenWebUI if you use flat string wrappers. Walk through how Web Markdown processors escape angle brackets (writing `&lt;` and `&gt;`), requiring of using the corresponding HTML entities inside target model configurations:
+  * Start Tag: `&lt;unused94&gt;thought`
+  * End Tag: `&lt;unused95&gt;`
+* **The "Truncated Reasoner" Paradox:** Show a live chat response. Demonstate that if completion max tokens is set to low values (e.g. 500), the model is cut off mid-thought before it has a chance to print `<unused95>`, breaking the collapsible box. Show how increasing the ceiling slider natively in OpenWebUI to **`4096`** gives it room to reason step-by-step, print the terminal token, and cleanly collapse the accordion box on generation!
 ```

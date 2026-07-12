@@ -170,4 +170,41 @@ We established a strict **Separation of Concerns** between raw dataset generatio
 
 This architecture keeps backend generator pipelines completely decoupled from front-end notebook parameter adjustments, making the entire code base clean, modular, and easy to maintain.
 
+---
+
+## Data Selection Integrity: Raw Corpus vs. Quality-Gate Filtering
+
+### 1. The Raw Input Horizon (73k Articles)
+Instructors and dataset architects often estimate SFT capacities from raw, post-generation summaries. For example, our initial PubMed oncology Q&A pipeline (stored under `/qa/`) contains exactly **73,463 raw entries**. 
+
+However, compiling raw, un-audited outputs directly into structured QLoRA fine-tuning run leads to massive behavioral pollution. The raw sequences frequently contain:
+- Unfinished thoughts (where a generator model timed out).
+- Lazy model completions that skipped the `<think>` reasoning block entirely.
+- Fictional, hallucinated PMIDs or diagnostic data that do not match the parsed abstracts.
+
+### 2. The Validated Gold Standard (~19.3k Balanced Rows)
+To resolve this, we implement a strict **quality-filter/grounding audit pass** via LLM-as-a-judge checking variables. This filters out corrupted lines and retains only pristine, verified reasoning chains—resulting in exactly **19,293 golden SFT rows**. 
+
+By training Phase 1 SFT on this validated subset instead of the raw 73K file:
+* Gradient descent strictly optimizes on **accurate, truthful, and deeply thoughtful clinical outputs**.
+* The model's reasoning capabilities converge exponentially faster on cleaner data gradients.
+
+---
+
+## Deployment & Frontend Integration: The Thinking Tag Rendering Paradox
+
+### 1. The Frontend Safety Trap (Angle Bracket Escaping)
+When serving reasoning models (like Gemma 3 or Qwen) in web interfaces like **OpenWebUI**, the streamed output containing raw tokens (e.g. `<unused94>thought` or `<think>`) is often processed by HTML/Markdown sanitizers **before** the reasoning tag extractor can parse it.
+- **The Bug:** Angle brackets `<` and `>` are escaped into HTML entities (`&lt;unused94&gt;thought`). If you set your OpenWebUI reasoning tags as literal strings (`<unused94>thought`), the parser will fail to match them, spilling raw text into the main chat window.
+- **The Solution:** Configure your frontend model-specific parameters to explicitly match the escaped HTML entities:
+  - **Start Tag:** `&lt;unused94&gt;thought`
+  - **End Tag:** `&lt;unused95&gt;`
+
+### 2. The Truncated Reasoner Trap (Max Token Ceiling Collapse)
+Oncology and clinical reasoning sequences are naturally long, detailed, and computationally thorough.
+- **The Bug:** Many frontend interfaces limit generation outputs to small baseline lengths (e.g., `200` or `500` max tokens). This cuts the model off mid-thought before it has a chance to execute the closing `<unused95>` token.
+- **The Result:** Because the closing tag is never printed, the UI fails to detect the end of the thought, causing the thinking interface to either spin infinitely, crash, or fail to render the collapsible accordion block entirely.
+- **The Solution:** Hard-cap the **Max Tokens / Completion Limit** under your OpenWebUI model parameters to at least **`4096`** tokens. This gives the deep clinical reasoning heads the namespace volume they need to finish their analysis, output the terminal token, and cleanly collapse the thought accordion into a pristine, clickable interface.
+
+
 
