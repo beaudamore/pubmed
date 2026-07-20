@@ -2,6 +2,18 @@
 
 > **Educational / Research Use Only** — not intended for clinical decision-making or patient care.
 
+## Current Workstream
+
+The active MedGemma 27B multimodal recovery and evaluation work is indexed at:
+
+```text
+workstreams/oncology-medgemma27b-multimodal-v1/
+```
+
+That workstream records numbered stages, immutable artifact paths, hashes, and
+evaluation gates without relocating the project's canonical data, notebooks,
+scripts, or model outputs.
+
 A **thinking-enabled oncology LoRA** fine-tuned on Qwen3 (4-bit QLoRA via [Unsloth](https://github.com/unslothai/unsloth)) that reasons through clinical oncology questions step-by-step using `<think>...</think>` chains. Any Qwen3 variant (14B+) can serve as the base model.
 
 Designed to run inside the [Unsloth notebooks Docker environment](https://github.com/unslothai/notebooks).

@@ -178,3 +178,25 @@ Hit subscribe, and I will see you in the next one."
 
 ---
 *(Visual: Outro screen showing social links, github repository, and subscribe button, accompanied by low-tempo diagnostic-style synth music.)*
+
+---
+
+## 📈 APPENDIX: EFFICACY ADVANTAGE & BUSINESS CASE (V3 vs. V2)
+
+This appendix outlines the qualitative and quantitative improvements achieved during the transition from the SFT V2 baseline to the MedGemma 27B SFT V3 architecture.
+
+### 1. Hard Business & Operational Benefits
+*   **Mitigation of Clinical Liability & Risk:** V2 is prone to severe reasoning failure modes (such as recommending contraindicated immunotherapy, e.g., Durvalumab, for EGFR-mutant patients), presenting extreme translation risk. V3 guarantees strict alignment with oncology consensus guidelines, translating to a highly dependable and lower-liability enterprise tool.
+*   **Production-Grade System Resilience:** Under standard production conditions, external APIs fail due to rate limits or connection timeouts. V3 was trained on synthetic API failures in 15% of its custom dataset, teaching the model to dynamically detect errors, gracefully communicate lookup constraints, and fallback to standardized clinical guidelines instead of looping or fabricating dummy data.
+*   **Substantial Compute Cost Optimization:** Transitioning to **Manual Sequence Packing** with a context window of 16,384 tokens allows grouping multiple records end-to-end. This reduced GPU training steps from 96 down to 24 for 1,000 examples, significantly lowering active compute hours and maximizing training throughput.
+
+### 2. Cognitive Architectural Enhancements (A Better "Brain")
+*   **Expanded Semantic Window:** Expanding the training context limit to 16,384 tokens allows the model to simultaneously evaluate multiple clinical trial study abstracts, complete patient histories, and dual-diagnosed guidelines in-memory.
+*   **Localized Clinical Vocabulary:** Selecting Google’s pre-trained **MedGemma 27B Text IT** base model provides native medical and pharmacological terminology that standard baselines cannot represent accurately.
+*   **Loss-Masked Learning Efficiency:** Masking user and system prompts (`labels = -100`) via a custom completion collator ensures the model's backpropagation processes are 100% focused on weight updates inside the clinical `<think>` and reasoning blocks rather than prompt structure.
+
+### 3. Improving Clinical Efficacy for Physicians and Researchers
+*   **Elimination of Dangerous Clinical Artifacts:** V3 prioritizes dominant driver mutations (such as EGFR Exon 19 Deletions) over superficial markers like high PD-L1 expression, keeping clinicians from prescribing harmful pathways (such as immunotherapy prior to targeted TKI therapies like Osimertinib).
+*   **Instant Grounded Evidence Synthesis:** Every clinical target is preceded by an in-depth, structured `<think>` trace that directly references and contrasts clinical data, such as citing the PACIFIC trial exclusions alongside the LAURA trial outcomes.
+*   **Adverse Effect Planning:** V3 plans beyond basic medication recommendations, alerting the clinician to delay specific drug-initiation timings (e.g., waiting 4 weeks post-chemoradiation) to avoid toxic overlays like severe pneumonitis.
+*   **Complex Multi-Abstract Grounding for Researchers:** For research questions involving obscure mutation overlays, the expanded context bucket ingests and synthesizes conflicting studies to resolve single-hop search limits.

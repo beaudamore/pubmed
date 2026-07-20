@@ -3,9 +3,9 @@ version: '3.8'
 # ~30GB allocation (0.25 × 128GB) - adjust as needed for FP16
 # ~8GB allocation (0.06 × 128GB) - leaves room for many concurrent models
 services:
-  vllm-qwen3-14b:
+  vllm-medgemma-4b:
     image: vllm/vllm-openai:latest
-    container_name: vllm-medgemma-27b
+    container_name: vllm-medgemma-4b
     runtime: nvidia
    
     environment:
@@ -22,41 +22,32 @@ services:
    
     volumes:
       - /home/spark/projects/training:/training
-      - /home/spark/docker-compose-files/logs/dgx-medgemma-27b:/logs
+      - /home/spark/docker-compose-files/logs/dgx-medgemma-4b:/logs
       - /home/spark/.cache/huggingface:/models
    
     ports:
-      - "8002:8000"
+      - "8003:8000"
    
     shm_size: '2gb'
    
     command: >
-      unsloth/medgemma-27b-it
-      --served-model-name medgemma:27b-it-q4_K_M
+      unsloth/medgemma-4b-it-bnb-4bit
       --download-dir /models
-      --host 0.0.0.0
-      --port 8000
-
-      --quantization bitsandbytes
-
-      --dtype auto
-      --enable-chunked-prefill
-      --gpu-memory-utilization 0.5
-      --kv-cache-dtype fp8
-      --kv-cache-memory-bytes 10G
-
-      --enable-lora
-      --lora-modules Oncologist_multimodel_canary=/training/pubmed/output/recovery/pubmed_oncologist_recovery_text_canary_512_medgemma_multimodal_sft/lora_adapters/
-      --max-lora-rank 32
-      --max-loras 2
-
+      --served-model-name medgemma:4b-it-q4_K_M
+      --gpu-memory-utilization 0.2
       --max-model-len 16384
       --max-num-batched-tokens 16384
+      --kv-cache-memory-bytes 10G
+      --kv-cache-dtype fp8
       --max-num-seqs 2
-
-      --enable-auto-tool-choice   
+      --port 8000
+      --host 0.0.0.0
+      --dtype auto
+      --enable-auto-tool-choice
+      --enable-chunked-prefill
       --tool-call-parser hermes
-      
+      --limit-mm-per-prompt '{"image": 2, "video": 1}'
+
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
@@ -71,6 +62,7 @@ services:
       options:
         max-size: "20m"
         max-file: "2"
+
 networks:
   default:
     name: vllm-dgx-medgemma-network

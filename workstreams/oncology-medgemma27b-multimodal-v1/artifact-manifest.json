@@ -1,0 +1,76 @@
+{
+  "workstream": "oncology-medgemma27b-multimodal-v1",
+  "started": "2026-07-13",
+  "status": "active",
+  "base_model": "unsloth/medgemma-27b-it",
+  "stages": {
+    "00_forensics": {
+      "status": "complete",
+      "decision_record": "docs/oncology_lora_recovery_plan.md"
+    },
+    "01_text_canary": {
+      "status": "complete",
+      "dataset": "data/training-data/recovery/text_canary_512/train.jsonl",
+      "dataset_sha256": "0e8f5a4d0e0a2523283e380d450372ccd74bbba2d3cca306436cfcf87cdf3456",
+      "notebook": "notebooks/loras/medgemma/recovery/pubmed_medgemma_text_canary_sft.ipynb",
+      "output": "output/recovery/pubmed_oncologist_recovery_text_canary_512_medgemma_sft"
+    },
+    "02_multimodal_canary": {
+      "status": "complete",
+      "dataset": "data/training-data/recovery/text_canary_512/train.jsonl",
+      "dataset_sha256": "0e8f5a4d0e0a2523283e380d450372ccd74bbba2d3cca306436cfcf87cdf3456",
+      "notebook": "notebooks/loras/medgemma/recovery/pubmed_medgemma_text_canary_sft_multimodal.ipynb",
+      "output": "output/recovery/pubmed_oncologist_recovery_text_canary_512_medgemma_multimodal_sft",
+      "adapter_sha256": "e3cb2643b026311309fa32f66415155c237366015f2efb53ea6099d26396aa0d",
+      "standalone_text_gate": "18/18",
+      "direct_vllm_text_gate": "18/18",
+      "synthetic_vision_gate": "passed",
+      "openwebui_image_transport": "passed"
+    },
+    "03_clinical_image_evaluation": {
+      "status": "in_progress",
+      "primary_dataset": {
+        "repo": "flaviagiammarino/vqa-rad",
+        "revision": "bcf91e7654fb9d51c8ab6a5b82cacf3fafd2fae9",
+        "split": "test",
+        "expected_examples": 451,
+        "local_path": "data/evaluation/oncology-medgemma27b-multimodal-v1/vqa-rad",
+        "parquet": "data/test-00000-of-00001-e5bc3d208bb4deeb.parquet",
+        "parquet_bytes": 10312735,
+        "parquet_sha256": "eb520bdab1116dd4f420120da19049d2315389fa126d031f65ec42e153264ea7"
+      },
+      "vqa_rad_direct_vllm": {
+        "status": "complete",
+        "evaluator": "workstreams/oncology-medgemma27b-multimodal-v1/scripts/evaluate_vqa_rad_vllm.py",
+        "responses": "data/evaluation/oncology-medgemma27b-multimodal-v1/vqa-rad/results/responses.jsonl",
+        "responses_sha256": "b1cc8077ffa32223743a6e68c369ff2c114e2cbd5069f9a6eb40a321d20f2e87",
+        "summary": "data/evaluation/oncology-medgemma27b-multimodal-v1/vqa-rad/results/summary.json",
+        "summary_sha256": "51ceb9a44c7d5d4f4c40340f219a9f04602e8d670ad6bb619852a24a922309e9",
+        "responses_per_model": 451,
+        "transport_errors": 0,
+        "base": {
+          "model": "medgemma:27b-it-q4_K_M",
+          "closed_exact": "171/251",
+          "open_exact": "41/200",
+          "overall_exact": "212/451"
+        },
+        "lora": {
+          "model": "Oncologist_multimodel_canary",
+          "closed_exact": "172/251",
+          "open_exact": "49/200",
+          "overall_exact": "221/451"
+        },
+        "paired": {
+          "improved": 21,
+          "regressed": 12,
+          "unchanged_correct": 200,
+          "unchanged_incorrect": 218
+        }
+      }
+    },
+    "04_tool_protocol_and_sft": {
+      "status": "blocked",
+      "blocker": "No verified MedGemma chat-template and vLLM parser round trip"
+    }
+  }
+}

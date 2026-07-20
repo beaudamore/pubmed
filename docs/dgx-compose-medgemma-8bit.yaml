@@ -3,7 +3,7 @@ version: '3.8'
 # ~30GB allocation (0.25 × 128GB) - adjust as needed for FP16
 # ~8GB allocation (0.06 × 128GB) - leaves room for many concurrent models
 services:
-  vllm-qwen3-14b:
+  vllm-medgemma-27b:
     image: vllm/vllm-openai:latest
     container_name: vllm-medgemma-27b
     runtime: nvidia
@@ -31,32 +31,27 @@ services:
     shm_size: '2gb'
    
     command: >
-      unsloth/medgemma-27b-it
-      --served-model-name medgemma:27b-it-q4_K_M
-      --download-dir /models
-      --host 0.0.0.0
-      --port 8000
-
+      google/medgemma-27b-text-it
       --quantization bitsandbytes
-
-      --dtype auto
-      --enable-chunked-prefill
-      --gpu-memory-utilization 0.5
-      --kv-cache-dtype fp8
-      --kv-cache-memory-bytes 10G
-
-      --enable-lora
-      --lora-modules Oncologist_multimodel_canary=/training/pubmed/output/recovery/pubmed_oncologist_recovery_text_canary_512_medgemma_multimodal_sft/lora_adapters/
+      --download-dir /models
+      --served-model-name medgemma:27b-it-q4_K_M
       --max-lora-rank 32
-      --max-loras 2
-
+      --enable-lora
+      --lora-modules Oncologist_sft=/training/pubmed/output/v3/pubmed_oncologist_v3_medgemma_sft/
+      --gpu-memory-utilization 0.5
       --max-model-len 16384
       --max-num-batched-tokens 16384
+      --kv-cache-memory-bytes 10G
+      --kv-cache-dtype fp8
       --max-num-seqs 2
-
-      --enable-auto-tool-choice   
+      --port 8000
+      --host 0.0.0.0
+      --dtype auto
+      --enable-auto-tool-choice
+      --enable-chunked-prefill
       --tool-call-parser hermes
-      
+      --quantization fp8
+   
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
