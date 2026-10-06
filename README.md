@@ -2,21 +2,23 @@
 
 > **Educational / Research Use Only** — not intended for clinical decision-making or patient care.
 
-## Current Workstream
+A **thinking-enabled oncology LoRA** that reasons through clinical oncology questions
+step-by-step in `<think>…</think>` chains before answering, trained with Unsloth 4-bit QLoRA
+in two stages (SFT, then DPO) on an NVIDIA DGX Spark. The training data is generated from
+PubMed abstracts and CancerGUIDE patient cases with four anti-hallucination mechanisms:
+grounding validation, boundary-awareness refusals, self-correction sequences, and
+preference pairs that contrast grounded against fabricated answers.
 
-The active MedGemma 27B multimodal recovery and evaluation work is indexed at:
+Shipped twice: on **Qwen3-14B** (March 2026) and on **Qwen3.6-27B** (August 2026). The
+Qwen3.6-27B adapter is published on Hugging Face as
+[`beaudamore/pubmed-oncology-lora-qwen3.6-27b`](https://huggingface.co/beaudamore/pubmed-oncology-lora-qwen3.6-27b)
+and has been served through vLLM `--enable-lora` behind Open WebUI, where two companion
+tools keep a PubMed knowledge base growing:
+[openwebui-pubmed-tool](https://github.com/beaudamore/openwebui-pubmed-tool) (in-chat deep
+research) and [openwebui-feed-ingest-pipe](https://github.com/beaudamore/openwebui-feed-ingest-pipe)
+(scheduled ingest with no model call).
 
-```text
-workstreams/oncology-medgemma27b-multimodal-v1/
-```
-
-That workstream records numbered stages, immutable artifact paths, hashes, and
-evaluation gates without relocating the project's canonical data, notebooks,
-scripts, or model outputs.
-
-A **thinking-enabled oncology LoRA** fine-tuned on Qwen3 (4-bit QLoRA via [Unsloth](https://github.com/unslothai/unsloth)) that reasons through clinical oncology questions step-by-step using `<think>...</think>` chains. Any Qwen3 variant (14B+) can serve as the base model.
-
-Designed to run inside the [Unsloth notebooks Docker environment](https://github.com/unslothai/notebooks).
+Writeup: [damore.ai/blog/pubmed-oncology-fine-tuning-pipeline](https://www.damore.ai/blog/pubmed-oncology-fine-tuning-pipeline).
 
 ---
 
@@ -25,8 +27,18 @@ Designed to run inside the [Unsloth notebooks Docker environment](https://github
 - **10 cancer types** — Bone, Brain, Breast, Colon, Gastric, Kidney, Lung, Ovarian, Prostate, Skin
 - **Chain-of-thought reasoning** — every answer includes an explicit `<think>` reasoning chain before the conclusion
 - **Anti-hallucination training** — grounding validation, boundary awareness ("beyond the evidence" refusals), and self-correction sequences
-- **DPO alignment** — preference pairs contrasting grounded vs. hallucinated answers
+- **DPO alignment** — 31,651 preference pairs contrasting grounded vs. hallucinated answers
 - **Treatment reasoning** from [CancerGUIDE](https://huggingface.co/datasets/microsoft/CancerGUIDE) synthetic patient cases
+- **Abstract-free Q&A** — 8,000 questions answered without the source abstract in the prompt, so the adapter also answers from learned knowledge, not only from supplied context
+
+## What it demonstrates
+
+| Area | Specifics |
+| --- | --- |
+| **Synthetic data at scale** | ~$330 and 2–3 days of OpenRouter generation over 71K cleaned abstracts with a thinking teacher model; per-type, per-round, key-level resume so a crash costs minutes, not days. |
+| **LLM-as-judge quality control** | Every answer judged Grounded / Extrapolated / Hallucinated against its source abstract; hallucinated answers become DPO rejections instead of being thrown away. |
+| **Fine-tuning on a 27B multimodal base** | Qwen3.6-27B is a `*ForConditionalGeneration` model: vision tower frozen explicitly, adapter scope asserted, 16K-token packed sequences via a persistent token cache, DPO reference log-probs cached to disk and resumable. |
+| **Responsible release** | Research-only model card, explicit out-of-scope uses, upstream license tracking (Apache 2.0, CC BY 4.0). |
 
 ## Data Sources
 
@@ -37,11 +49,10 @@ Designed to run inside the [Unsloth notebooks Docker environment](https://github
 
 ### PubMed Cancer NLP Dataset
 
-- **HuggingFace:** <https://huggingface.co/datasets/cyberpsych/PubMed-Cancer-NLP-Textual-Dataset>
 - **Raw size:** 99,956 records across 10 CSVs
 - **Clean size:** 71,343 records after cleaning
 - **Format:** Title + Abstract from PubMed publications
-- **Drop reasons (from 2026-03-04 run):** 19,406 short abstract, 8,131 duplicate, 882 no title, 162 retracted, 32 non-English
+- **Drop reasons (2026-03-04 run):** 19,406 short abstract, 8,131 duplicate, 882 no title, 162 retracted, 32 non-English
 
 ### CancerGUIDE
 
@@ -49,204 +60,147 @@ Designed to run inside the [Unsloth notebooks Docker environment](https://github
 - **Format:** Synthetic patient notes + treatment recommendations
 - **Created by:** Microsoft Research using GPT-4.1
 
+---
+
+## Headline numbers
+
+| Item | Value |
+| --- | --- |
+| **SFT set** | 40,020 ShareGPT conversations (`pubmed_oncologist_combined_sharegpt.jsonl`) |
+| **SFT composition** | qa 14,007 · continuation 9,205 · qa_no_abstract 8,004 · treatment_reasoning 4,802 · self_correction 2,001 · beyond_evidence 2,001 |
+| **DPO set** | 31,651 pairs: beyond_evidence 14,660 · grounding_reject 14,050 · self_correction 2,941 |
+| **Datagen config (current)** | `MAX_RECORDS = 20,000` source records, `NUM_ROUNDS = 3` question angles × `QUESTIONS_PER_CHUNK = 3`, chunks of 1,500 chars on sentence boundaries |
+| **Teacher model** | `qwen/qwen3-235b-a22b-thinking-2507` via OpenRouter |
+| **Hardware** | NVIDIA DGX Spark (GB10, 128 GB unified memory) |
+
+## Shipped adapters
+
+Values read from `adapter_config.json` and `trainer_state.json`, not from the notebooks.
+Adapters live under `output/` (gitignored).
+
+| Adapter | Base | Date | Stage | Steps | Loss (first → last) | Notes |
+| --- | --- | --- | --- | ---: | --- | --- |
+| `pubmed_oncologist_v2_sft` | `unsloth/Qwen3-14B-unsloth-bnb-4bit` | 2026-03-18 | SFT | 2,996 | 1.44 → 0.47 | r=32/α=32, seq 4096, manual packing |
+| `pubmed_oncologist_v2_dpo_qwen3_14b` | same | 2026-03-30 | DPO | 741 | — | continues the SFT adapter |
+| `pubmed_oncologist_v2_sft_qwen36_27b_unsloth_4bit` | `unsloth/Qwen3.6-27B` | 2026-08-07 | SFT | 241 | 1.11 → 0.58 | r=32, seq 16,384 packed, LR 2e-4, grad-accum 8, vision tower frozen |
+| `pubmed_oncologist_v2_dpo_qwen36_27b_unsloth_4bit` | same | 2026-08-09 | DPO | 733 | — | 5,859 pairs after sampling and validation, β 0.05, LR 5e-6, seq 3072. **Published on Hugging Face.** |
+
+Serving: the Qwen3.6 adapter ran as `oncologist_dpo_4bit_bnb` on a Qwen3.6-27B NVFP4 vLLM
+stack (reference compose in the biblical repo's `compose/qwen_3_6_nvfp4-compose.yaml`). The
+current production stack is Qwen3.8-27B and does not carry an oncology adapter; a Qwen3.8
+retrain is the next training step.
+
 ## Architecture
 
 | Component | Detail |
 | --------- | ------ |
 | **Datagen LLM** | Qwen3-235B-A22B Thinking (via OpenRouter) |
-| **Lite model** | Qwen 2.5-7B Instruct (question gen & classification) |
-| **Base model** | Qwen3-Instruct — any variant 14B+ (4-bit QLoRA target) |
+| **Judge LLM** | same model, structured Grounded / Extrapolated / Hallucinated verdicts |
+| **Base models** | Qwen3-14B (first release), Qwen3.6-27B (current adapter), any Qwen3-family instruct model 14B+ works with the notebooks |
 | **Hardware** | NVIDIA DGX Spark (128 GB unified memory) |
-| **Training** | [Unsloth notebooks](https://github.com/unslothai/notebooks) Docker container |
+| **Training** | `unsloth-notebook` container (JupyterLab on host port 8889) |
 
 ### Thinking Model Details
 
-The Qwen3-235B-A22B is a Mixture-of-Experts model (235B total, 22B active parameters) that **enforces reasoning** via `<think>...</think>` blocks. Every answer includes an explicit reasoning chain before the conclusion. This is preserved in training data (`KEEP_THINKING = True`) so the fine-tuned LoRA learns to reason through oncology problems.
+Qwen3-235B-A22B is a Mixture-of-Experts model (235B total, 22B active parameters) that
+**enforces reasoning** via `<think>...</think>` blocks. Every answer includes an explicit
+reasoning chain before the conclusion. This is preserved in training data
+(`KEEP_THINKING = True`) so the fine-tuned LoRA learns to reason through oncology problems.
+
+---
 
 ## Project Structure
 
 ```text
 pubmed/
-├── .env.example              # API key template — copy to .env
-├── .gitignore
+├── .env.example              # OPENROUTER_API_KEY — copy to .env
 ├── README.md
+├── hf/README.md              # Hugging Face model card for the Qwen3.6-27B adapter
 ├── scripts/
 │   ├── clean_pubmed.py       # Download & clean source data
-│   ├── augment_tool_calling_data.py  # Restore backup data + add PubMed tool-call SFT/DPO files
-│   ├── validate_tool_calling_data.py # Validate generated tool-call message structure
 │   └── requirements.txt
 ├── notebooks/
 │   ├── datagen/
-│   │   └── pubmed_datagen.ipynb                 # Data generation notebook
+│   │   ├── pubmed_datagen_sft.ipynb             # Q&A, quality gates, anti-hallucination sets, continuation, blend
+│   │   ├── pubmed_datagen_dpo.ipynb             # Preference pairs from the SFT run's rejects and refusals
+│   │   ├── pubmed_datagen_qa_no_abstract.ipynb  # Correction pass: adds the abstract-free Q&A category
+│   │   └── pubmed_datagen.ipynb                 # Earlier single-notebook v2 (SFT + DPO in one), kept for reference
 │   └── loras/
-│       ├── pubmed_sft_training.ipynb             # Phase 1: SFT training
-│       └── pubmed_dpo_training.ipynb             # Phase 2: DPO alignment
-└── data/                     # Generated by pipeline (gitignored)
-    ├── source-raw/           # Downloaded HF datasets (auto-cached)
-    ├── source-clean/         # Cleaned per-cancer-type JSONL files
-    │   ├── pubmed_{type}.jsonl
-    │   ├── cancerguide_structured.jsonl
-    │   ├── cancerguide_unstructured.jsonl
-    │   └── cleaning_report.json
-    ├── training-data-backups-before-tool-calling-augmentation/  # Original expensive datagen output
-    └── training-data/                                           # Restored + augmented by script
-      ├── pubmed_oncologist_v2_tool_sft_messages.jsonl         # Native tool-calling SFT rows
-      ├── pubmed_oncologist_v2_tool_dpo_messages.jsonl         # Tool-use preference pairs
-      ├── tool_calling_augmentation_manifest.json              # Deterministic generation manifest
-        └── pubmed_oncologist_v2/
-            ├── qa/                       # Raw QA per cancer type
-            │   └── _checkpoints/         # Per-type round-tracking JSON
-            ├── qa_validated/             # Post-grounding-check QA
-            ├── cancerguide_reasoning/    # Treatment reasoning QA
-            ├── anti_hallucination/
-            │   ├── beyond_evidence/      # Unanswerable Q → refusal A
-            │   └── self_correction/      # Wrong → pushback → corrected
-            ├── augmented/
-            │   └── continuation/         # Seed+completion pairs (no API)
-            ├── dpo/                      # DPO preference pairs
-            │   └── grounding_rejects/
-            ├── pubmed_oncologist_sharegpt.jsonl
-            ├── pubmed_oncologist_combined_sharegpt.jsonl  # Final SFT file
-            └── pubmed_oncologist_v2_dpo.jsonl             # Final DPO file
+│       ├── pubmed_qwen3-14b-sft_training.ipynb  # Qwen3-14B SFT (March 2026)
+│       ├── pubmed_dpo_training_v1.ipynb / _v2.ipynb   # Qwen3-14B DPO
+│       └── qwen36/
+│           ├── pubmed_qwen36-27b-sft_bnb4bit_dynamic.ipynb   # Qwen3.6-27B SFT (shipped run)
+│           ├── pubmed_qwen36-27b-sft_bnb4bit.ipynb           # earlier variant
+│           ├── pubmed_qwen36-27b-sft_NVFP4.ipynb             # experiment: train over the NVFP4 base
+│           ├── pubmed_qwen36-27b-dpo_bnb4bit_v2.ipynb        # Qwen3.6-27B DPO (shipped run)
+│           └── pubmed_qwen36-27b-dpo_nvfp4_v2.ipynb          # experiment
+├── openwebui/
+│   ├── filters/medgemma_vision_inlet_filter.py  # From the MedGemma experiments (see History)
+│   └── prompts/                                 # Oncologist system prompt, vision analysis prompt
+├── docs/                     # Design notes and the MedGemma-era reports (see History)
+├── data/                     # (gitignored) generated by the pipeline
+│   ├── source-raw/           # HF downloads
+│   ├── source-clean/         # pubmed_{type}.jsonl, cancerguide_*.jsonl, cleaning_report.json
+│   └── training-data/
+│       ├── pubmed_oncologist_v2_dpo.jsonl       # Final DPO file (31,651 pairs)
+│       └── pubmed_oncologist_v2/
+│           ├── qa/ (+ _checkpoints/)            # Raw QA per cancer type, round tracking
+│           ├── qa_validated/                    # Post-grounding-check QA
+│           ├── qa_no_abstract/                  # Abstract-free QA + audit report
+│           ├── cancerguide_reasoning/           # Treatment reasoning QA
+│           ├── anti_hallucination/{beyond_evidence,self_correction}/
+│           ├── augmented/continuation/          # Seed → completion pairs (no API)
+│           ├── dpo/grounding_rejects/           # Hallucinated answers kept as rejections
+│           ├── vertex-ai/                       # Gemma-format exports for the Vertex AI project
+│           └── pubmed_oncologist_combined_sharegpt.jsonl   # Final SFT file (40,020)
+└── output/<model_name>/{train,lora_adapters}/   # (gitignored)
 ```
+
+---
 
 ## Quick Start
 
-### 1. Clone & Configure
+Notebooks run in JupyterLab inside the `unsloth-notebook` container (host port 8889), which
+mounts this workspace at `/workspace/training`. Scripts run on the host.
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/pubmed-oncologist-lora.git
-cd pubmed-oncologist-lora
-
-cp .env.example .env
-# Edit .env — add your OpenRouter API key
-```
-
-### 2. Install Dependencies
-
-```bash
+# 1. Configure
+cp .env.example .env            # add OPENROUTER_API_KEY
 pip install -r scripts/requirements.txt
-```
 
-### 3. Clean Source Data
-
-```bash
+# 2. Clean source data (host, downloads from Hugging Face)
 python scripts/clean_pubmed.py
+#    -> data/source-clean/pubmed_{type}.jsonl, cancerguide_*.jsonl, cleaning_report.json
+
+# 3. Generate training data (container; days and ~$330 at full scale, see "Estimated Scale")
+#    notebooks/datagen/pubmed_datagen_sft.ipynb            -> pubmed_oncologist_combined_sharegpt.jsonl
+#    notebooks/datagen/pubmed_datagen_dpo.ipynb            -> pubmed_oncologist_v2_dpo.jsonl
+#    notebooks/datagen/pubmed_datagen_qa_no_abstract.ipynb -> adds qa_no_abstract/ and rewrites the combined file
+
+# 4. Train (container). Check the GPU is free first:
+docker ps                       # stop any vllm-* / sglang-* holding the GPU
+#    notebooks/loras/qwen36/pubmed_qwen36-27b-sft_bnb4bit_dynamic.ipynb
+#    notebooks/loras/qwen36/pubmed_qwen36-27b-dpo_bnb4bit_v2.ipynb
+
+# 5. Audit the adapter for module-scope leakage before shipping it
+docker exec unsloth-notebook python /workspace/training/docs/audit_adapters.py pubmed
 ```
 
-Downloads PubMed Cancer NLP + CancerGUIDE from HuggingFace, applies text normalization (HTML unescape, Unicode NFC, ligature replacement, whitespace collapse), filters (min 200 chars abstract, min 10 chars title, English-only, retraction detection), SHA256 deduplication, then writes per-cancer-type JSONL files to `data/source-clean/`.
-
-### 4. Generate Training Data
-
-Open the datagen notebook:
-
-```
-notebooks/datagen/pubmed_datagen.ipynb
-```
-
-### 4b. Add Tool-Calling Augmentation Without Regenerating Datagen
-
-If the original expensive datagen output has been moved to:
-
-```text
-data/training-data-backups-before-tool-calling-augmentation/
-```
-
-restore it into the normal notebook path and add deterministic PubMed tool-call training files:
-
-```bash
-python3 scripts/augment_tool_calling_data.py --overwrite
-python3 scripts/validate_tool_calling_data.py
-```
-
-This step does **not** call OpenRouter, PubMed, HuggingFace, or any network service. It copies the backup data back to `data/training-data/` and derives supplemental examples that teach:
-
-```text
-biomedical evidence question -> deep_research_pubmed tool call -> tool result -> evidence-grounded answer
-```
-
-Generated files:
-
-| File | Purpose |
-| ---- | ------- |
-| `data/training-data/pubmed_oncologist_v2_tool_sft_messages.jsonl` | Native message-format tool-calling SFT examples. |
-| `data/training-data/pubmed_oncologist_v2_tool_dpo_messages.jsonl` | Preference pairs where chosen uses `deep_research_pubmed` and rejected answers directly. |
-| `data/training-data/tool_calling_augmentation_manifest.json` | Reproducibility manifest with source path, counts, seed, and output paths. |
-
-The synthetic tool results use `TRAINING-SNAPSHOT-*` identifiers instead of fabricated PMIDs when the original QA row does not carry article metadata. This is intentional: the augmentation teaches routing and tool-result synthesis, not fake citation memorization.
-
-**With the [Unsloth notebooks](https://github.com/unslothai/notebooks) Docker environment:**
-
-```bash
-docker run --gpus all \
-  --env-file .env \
-  -v $(pwd):/workspace/pubmed \
-  -p 8888:8888 \
-  unsloth/unsloth:latest
-```
-
-### 5. Train
-
-Run the training notebooks in `notebooks/loras/` (requires GPU — designed for the [Unsloth notebooks](https://github.com/unslothai/notebooks) Docker environment):
-
-1. **`pubmed_qwen3-14b-sft_training.ipynb`** — medical SFT reasoning (run first)
-2. **Tool-calling SFT notebook** — train on `pubmed_oncologist_v2_tool_sft_messages.jsonl`
-3. **`pubmed_dpo_training_v2.ipynb`** — DPO alignment after tool-calling SFT; use tool-aware DPO data or merge in `pubmed_oncologist_v2_tool_dpo_messages.jsonl`
-
-## Environment Variables
-
-| Variable | Required | Description |
-| -------- | :------: | ----------- |
-| `OPENROUTER_API_KEY` | Yes | OpenRouter API key for LLM calls |
-
-Set via `.env` file (loaded by `python-dotenv`) or export directly in your shell / Docker environment. The notebook auto-detects the environment (Docker/local) and resolves paths accordingly.
+`MODEL_NAME_BASE` in the SFT notebook is the contract with the DPO notebook, which resolves
+the SFT adapter path from it. Change it in both places or not at all.
 
 ---
 
 ## Pipeline — Full Workflow
 
 ```text
-PubMed + CancerGUIDE  ──►  Clean  ──►  Datagen  ──►  Tool Augment  ──►  SFT  ──►  Tool SFT  ──►  DPO
-         HuggingFace         │               │               │                 │         │            │
-                         71K JSONL     QA + anti-halluc.   local scripts      LoRA      LoRA         LoRA
-                                       + treatment          no API calls       adapter   adapter      adapter
-                                       + continuation
+PubMed + CancerGUIDE  ──►  Clean  ──►  SFT datagen  ──►  DPO datagen  ──►  SFT  ──►  DPO
+       HuggingFace          │              │                  │              │          │
+                        71K JSONL    QA + anti-halluc.   pairs from     LoRA       single
+                                     + treatment         rejects and    adapter    SFT+DPO
+                                     + continuation      refusals                  adapter
+                                     + abstract-free QA
 ```
-
-### Phase 2b: Tool-Calling Augmentation (`scripts/augment_tool_calling_data.py`)
-
-This local script preserves the existing costly datagen output and adds the missing tool-routing behavior.
-
-What it does:
-
-1. Treats `data/training-data-backups-before-tool-calling-augmentation/` as read-only source data.
-2. Recreates `data/training-data/` so the existing notebook paths keep working.
-3. Reads validated PubMed QA rows when available.
-4. Builds native message-format tool calls to `deep_research_pubmed` using the existing user question as the PubMed query.
-5. Creates synthetic PubMed-tool-shaped results from existing grounded answers, without inventing real PMIDs.
-6. Writes tool-SFT and tool-DPO JSONL files plus a manifest.
-
-Run:
-
-```bash
-python3 scripts/augment_tool_calling_data.py --overwrite
-python3 scripts/validate_tool_calling_data.py
-```
-
-By default, the script reads the active LoRA notebooks and scales tool examples from the selected training sizes. With the current Qwen3-14B notebooks, SFT has no limiter and DPO uses `DPO_MAX_PAIRS = 9000`, so the script writes 9,000 tool-SFT rows and 9,000 tool-DPO rows. Adjust the ratio or force an explicit cap with:
-
-```bash
-python3 scripts/augment_tool_calling_data.py --overwrite --tool-ratio-to-chosen 0.5 --seed 42
-python3 scripts/augment_tool_calling_data.py --overwrite --max-tool-examples 9000 --seed 42
-```
-
-The recommended retrain order is:
-
-```text
-Qwen3 base -> medical SFT -> PubMed tool-calling SFT -> tool-aware DPO
-```
-
-Do not run prose-only DPO after tool-calling SFT unless tool-use preference pairs are included, because prose-only DPO can re-strengthen the unwanted direct-answer habit.
 
 ### Phase 1: Data Cleaning (`scripts/clean_pubmed.py`)
 
@@ -259,23 +213,21 @@ Do not run prose-only DPO after tool-calling SFT unless tool-use preference pair
 7. Clean and write CancerGUIDE JSONL files
 8. Generate cleaning report
 
-### Phase 2: Data Generation (`notebooks/datagen/pubmed_datagen.ipynb`)
-
-The datagen notebook has 35 cells (17 code + 18 markdown) organized into these sections:
+### Phase 2: SFT Data Generation (`notebooks/datagen/pubmed_datagen_sft.ipynb`)
 
 <details>
-<summary><b>Section 1-2: Configuration & Environment</b> (cells 1-5)</summary>
+<summary><b>Section 1-2: Configuration & Environment</b></summary>
 
 - API config: OpenRouter endpoint + Qwen3-235B Thinking model
 - `KEEP_THINKING = True` — preserve `<think>` blocks in training data
 - Test mode: set `TEST_CHUNKS_PER_ROUND` to e.g. 20 for quick iteration (default 0 = full run)
-- `MAX_RECORDS` — proportional random sample cap on source records before chunking (0 = use all; adjustable)
+- `MAX_RECORDS` — proportional random sample cap on source records before chunking (0 = use all)
 - Dependencies: `openai`, `tqdm`, `nest_asyncio`, `tiktoken`, `pysbd`
 
 </details>
 
 <details>
-<summary><b>Section 3: Load & Prepare Data</b> (cells 6-7)</summary>
+<summary><b>Section 3: Load & Prepare Data</b></summary>
 
 - Read cleaned JSONL files from `source-clean/`
 - **Sentence-aware chunking** via pySBD + medical abbreviation protection
@@ -288,7 +240,7 @@ The datagen notebook has 35 cells (17 code + 18 markdown) organized into these s
 </details>
 
 <details>
-<summary><b>Section 4: Oncologist Persona</b> (cells 8-9)</summary>
+<summary><b>Section 4: Oncologist Persona</b></summary>
 
 - Single clinical oncologist system prompt
 - Cancer-type specialization via `make_system_prompt(cancer_type)`
@@ -298,21 +250,21 @@ The datagen notebook has 35 cells (17 code + 18 markdown) organized into these s
 </details>
 
 <details>
-<summary><b>Section 5: Q/A Generation</b> (cells 10-11)</summary>
+<summary><b>Section 5: Q/A Generation</b></summary>
 
-- **Configurable question rounds** (`NUM_ROUNDS`, default 1):
-  - Each round generates `QUESTIONS_PER_CHUNK` (default 3) questions per chunk
-  - Round types: Mechanistic, Clinical Application, Critical Analysis
+- **Question rounds** (`NUM_ROUNDS`, currently 3): each round generates `QUESTIONS_PER_CHUNK`
+  questions per chunk from a different angle — Mechanistic, Clinical Application, Critical Analysis
 - Async with semaphore (`CONCURRENCY = 50`)
 - 180s timeout per API call (thinking model needs time)
 - `max_tokens = 4096` for answers (accommodates `<think>` chains)
-- **Resume logic:** Per-cancer-type, per-round checkpointing
+- **Resume logic:** per cancer type, per round, and (since 2026-08-21) per key, with batched
+  flushes, so an interrupted run resumes at the last written row
 - Processes one cancer type at a time (memory bounded)
 
 </details>
 
 <details>
-<summary><b>Section 5b: Quality Gate</b> (cells 12-13)</summary>
+<summary><b>Section 5b: Quality Gate — Reasoning Depth</b></summary>
 
 - `<think>` block presence rate (target: >80%)
 - Answer length distribution
@@ -322,30 +274,31 @@ The datagen notebook has 35 cells (17 code + 18 markdown) organized into these s
 </details>
 
 <details>
-<summary><b>Section 5c: Answer Grounding Check</b> (cells 14-15)</summary>
+<summary><b>Section 5c: Answer Grounding Check</b></summary>
 
-- **LLM-as-judge:** Validates each answer against source abstract
+- **LLM-as-judge:** validates each answer against its source abstract
 - Three verdicts: **Grounded** / **Extrapolated** / **Hallucinated**
 - String-based pre-filter: catches leaked source references ("according to the text", etc.)
 - Strips `<think>` blocks before checking (judges the answer claims, not the reasoning)
-- Writes validated per-type files to `qa_validated/`
+- Writes validated per-type files to `qa_validated/`; hallucinated answers go to
+  `dpo/grounding_rejects/` for the DPO stage
 - Assembly uses validated files when available
 
 </details>
 
 <details>
-<summary><b>Section 5d: "Beyond the Evidence" QA</b> (cells 16-17)</summary>
+<summary><b>Section 5d: "Beyond the Evidence" QA</b></summary>
 
-- Generates questions the abstract **CANNOT** answer
-- Model produces honest refusal + explains evidence gap + describes what would be needed
+- Generates questions the abstract **cannot** answer
+- Model produces an honest refusal, explains the evidence gap, and describes what would be needed
 - Question types: unstudied populations, missing long-term outcomes, unmentioned comparators
 - Samples 30% of chunks, 2 questions each
-- **Most important anti-hallucination mechanism** — teaches boundary awareness
+- **The most important anti-hallucination mechanism** — teaches boundary awareness
 
 </details>
 
 <details>
-<summary><b>Section 5e: Self-Correction Sequences</b> (cells 18-19)</summary>
+<summary><b>Section 5e: Self-Correction Sequences</b></summary>
 
 - Generates deliberate wrong answers → user pushback → corrected answers
 - Wrong answer turn marked `"train": false` (masked during training)
@@ -357,7 +310,7 @@ The datagen notebook has 35 cells (17 code + 18 markdown) organized into these s
 </details>
 
 <details>
-<summary><b>Section 6: CancerGUIDE Treatment Reasoning</b> (cells 20-21)</summary>
+<summary><b>Section 6: CancerGUIDE Treatment Reasoning</b></summary>
 
 - Direct treatment questions (3 per patient): "What treatment would you recommend?"
 - What-if variants (2 per patient): altered comorbidities, mutations, age, metastasis sites
@@ -367,16 +320,16 @@ The datagen notebook has 35 cells (17 code + 18 markdown) organized into these s
 </details>
 
 <details>
-<summary><b>Section 7: Assembly</b> (cells 22-23)</summary>
+<summary><b>Section 7: Assembly</b></summary>
 
 - Read validated per-type files + CancerGUIDE reasoning
 - Group QA by chunk → multi-turn ShareGPT conversations (`TURNS_PER_CONVERSATION = 4`)
-- Quality filter: reject AI-speak and low-quality answers
+- Quality filter: reject AI-speak and low-quality answers; dedupe on assembly
 
 </details>
 
 <details>
-<summary><b>Section 8: Continuation Chunks</b> (cells 26-27)</summary>
+<summary><b>Section 8: Continuation Chunks</b></summary>
 
 - Token-based chunking (`CONTINUATION_CHUNK_TOKENS = 500`)
 - `split_seed_completion()`: ~60 token seed + ~440 token completion
@@ -386,56 +339,71 @@ The datagen notebook has 35 cells (17 code + 18 markdown) organized into these s
 </details>
 
 <details>
-<summary><b>Section 9: Merge</b> (cells 28-29)</summary>
+<summary><b>Section 9-10: Merge & Verify</b></summary>
 
-- Loads all 5 data sources and up/downsamples to target blend ratios (see table below)
-- Shuffles combined file
-
-</details>
-
-<details>
-<summary><b>Section 10: Final Verification</b> (cells 30-31)</summary>
-
-- Format validation (system → human → gpt alternation)
-- Thinking block rates by data type
-- Cancer type coverage per data type
-- Sample conversations from each category
+- Loads all data sources and up/downsamples to the target blend ratios (table below), shuffles
+- Format validation (system → human → gpt alternation), thinking-block rates by data type,
+  cancer-type coverage per data type, sample conversations from each category
 
 </details>
+
+### Phase 2b: Abstract-Free QA (`notebooks/datagen/pubmed_datagen_qa_no_abstract.ipynb`)
+
+A correction pass added on 2026-08-05, before the Qwen3.6 runs (the Qwen3-14B adapters were
+trained on the earlier 33,349-row set without it). The original Q&A always carried the
+source abstract in the user turn, which teaches the model to answer *from supplied context*
+but gives no signal for answering *from knowledge*. This notebook audits the combined file,
+generates and validates 8,000 abstract-free rows (the same kinds of questions, no abstract in
+the prompt, answers still grounded in the source), writes `qa_no_abstract/` with an audit
+report, rewrites the combined SFT file (keeping the previous one as `*.pre_qa_no_abstract.jsonl`),
+and updates the SFT notebooks' category handling.
+
+### Phase 2c: DPO Data Generation (`notebooks/datagen/pubmed_datagen_dpo.ipynb`)
+
+Builds TRL-format preference pairs from what the SFT datagen already produced (details in
+the [DPO section](#dpo--direct-preference-optimization)). Key-level resume and batched flush
+for the grounding-reject and beyond-evidence sources (2026-08-21).
 
 ### Training Data Blend
 
-| Data Type | Target % | Purpose |
-| --------- | :------: | ------- |
-| Q/A (grounding-validated) | 42 | Core oncology knowledge with thinking chains |
-| Continuation | 33 | Medical language patterns (no API calls) |
-| Treatment reasoning | 15 | Clinical decision-making from patient cases |
-| Beyond the evidence | 5 | Boundary awareness / honest refusal |
-| Self-correction | 5 | Error recovery patterns |
+| Data Type | Target % | Observed rows | Purpose |
+| --------- | :------: | ------------: | ------- |
+| Q/A (grounding-validated) | 42 | 14,007 | Core oncology knowledge with thinking chains |
+| Continuation | 33 | 9,205 | Medical language patterns (no API calls) |
+| Treatment reasoning | 15 | 4,802 | Clinical decision-making from patient cases |
+| Beyond the evidence | 5 | 2,001 | Boundary awareness / honest refusal |
+| Self-correction | 5 | 2,001 | Error recovery patterns |
+| Abstract-free Q/A (added 2b) | — | 8,004 | Answering from learned knowledge |
 
-### Phase 3: SFT Training (`notebooks/loras/pubmed_sft_training.ipynb`)
+### Phase 3: SFT Training (`notebooks/loras/qwen36/pubmed_qwen36-27b-sft_bnb4bit_dynamic.ipynb`)
 
-Supervised fine-tuning via Unsloth 4-bit QLoRA on Qwen3-Instruct (any variant 14B+):
+Supervised fine-tuning via Unsloth 4-bit QLoRA on `unsloth/Qwen3.6-27B`:
 
-- **Format:** ShareGPT with ChatML template (`<|im_start|>` / `<|im_end|>`)
-- **Input:** `pubmed_oncologist_combined_sharegpt.jsonl`
-- **LoRA targets:** q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, down_proj
-- **Packing:** Manual sequence packing — all conversations concatenated and sliced into fixed `MAX_SEQ_LENGTH` (4096) token chunks with zero padding waste
-- **Hyperparameters:** LR 2e-4, linear scheduler, r=32, alpha=32, batch 2 × 4 grad_accum = 8 effective, 1 epoch
-- **Docker:** [Unsloth notebooks](https://github.com/unslothai/notebooks) (`unsloth/unsloth:latest`) with `--gpus all`
-- **Design:** Self-contained "run all and walk away" notebook
-- **Output:** SFT LoRA adapter saved to `output/pubmed_oncologist_v2_sft/lora_adapters/`
+- **Format:** ShareGPT rendered through the base model's chat template, `enable_thinking=False`
+  at render time (the `<think>` content is in the data itself)
+- **Input:** `pubmed_oncologist_combined_sharegpt.jsonl` (all 40,020 rows)
+- **Multimodal base handling:** processor unwrapped to its tokenizer; `finetune_vision_layers=False`
+  with an assertion that no vision or MTP module received an adapter; adapter audited again after reload
+- **Packing:** a persistent `packed_token_cache/` (fingerprinted by input file and tokenizer) packs
+  conversations into `MAX_SEQ_LENGTH = 16,384` token sequences once; re-runs reuse it
+- **Hyperparameters:** LR 2e-4, r=32, grad-accum 8, 1 epoch, `use_gradient_checkpointing=True`
+- **Durability:** `get_last_checkpoint` auto-resume, cold-reload verification, completion sentinel
+- **Output:** `output/pubmed_oncologist_v2_sft_qwen36_27b_unsloth_4bit/lora_adapters/`
 
-### Phase 4: DPO Training (`notebooks/loras/pubmed_dpo_training_v2.ipynb`)
+The Qwen3-14B notebook (`pubmed_qwen3-14b-sft_training.ipynb`) is the March 2026 original:
+ChatML formatting, manual sequence packing into 4,096-token chunks, r=32/α=32, LR 2e-4,
+batch 2 × 4 grad-accum, 1 epoch.
+
+### Phase 4: DPO Training (`notebooks/loras/qwen36/pubmed_qwen36-27b-dpo_bnb4bit_v2.ipynb`)
 
 Direct Preference Optimization that **continues training the SFT LoRA** (no new adapters stacked):
 
-- **Input:** `pubmed_oncologist_v2_dpo.jsonl` (chosen/rejected pairs)
-- **Prerequisite:** SFT LoRA must be trained first — the DPO notebook loads it from `output/pubmed_oncologist_v2_sft/lora_adapters/`
-- **Strategy:** Loads the SFT LoRA adapter and continues training the same weights with DPO loss. This produces a **single LoRA adapter** relative to base Qwen3 that contains both SFT knowledge and DPO alignment — no merging or stacking required for deployment
-- **Sampling:** `DPO_MAX_PAIRS = 9000` (adjustable) with stratified sampling by source to preserve distribution
-- **Hyperparameters:** LR 5e-6 (~40× lower than SFT), beta=0.1, sigmoid loss, batch 1 × 8 = 8 effective, 1 epoch
-- **Output:** Combined SFT+DPO LoRA adapter ready for vLLM serving
+- **Input:** `pubmed_oncologist_v2_dpo.jsonl` (chosen/rejected pairs), `DPO_MAX_PAIRS = 9000`
+  stratified by source; 5,859 pairs reached the trainer after the notebook's sampling and validation in the shipped run
+- **Prerequisite:** the SFT adapter, resolved from `MODEL_NAME_BASE`; the inherited tower freeze is re-verified
+- **Reference log-probs:** precomputed once into a persistent, fingerprinted `ref_logprobs_cache/`, resumable
+- **Hyperparameters:** LR 5e-6 (~40× lower than SFT), β 0.05, sigmoid loss, `MAX_SEQ_LENGTH = 3072`, 1 epoch
+- **Output:** a single combined SFT+DPO adapter ready for vLLM serving
 - See [DPO Details](#dpo--direct-preference-optimization) below
 
 ---
@@ -448,7 +416,7 @@ Four complementary mechanisms, inspired by [Augmentoolkit](https://github.com/e-
 
 - **What:** LLM checks if every claim in the answer is traceable to the source abstract
 - **How:** Thinking model as judge with structured verdict prompt
-- **Result:** Hallucinated answers are rejected; grounded + extrapolated answers kept
+- **Result:** Hallucinated answers are rejected from SFT and reused as DPO rejections
 - **Why it works:** Catches fabricated trial names, invented statistics, wrong mechanisms
 
 ### Boundary Awareness Training (Section 5d)
@@ -476,8 +444,6 @@ Four complementary mechanisms, inspired by [Augmentoolkit](https://github.com/e-
 ## Chunking Strategy
 
 ### Why Sentence-Aware Chunking Matters
-
-Chunking directly affects training data quality at every downstream stage:
 
 | Stage | Bad chunk (mid-sentence cut) | Good chunk (complete sentences) |
 | ----- | ---------------------------- | ------------------------------- |
@@ -540,6 +506,7 @@ All training data uses **ShareGPT multi-turn conversation format:**
 | `data_type` | Turns | `<think>` blocks | Masked turns |
 | ----------- | ----- | :--------------: | :----------: |
 | `qa` | System + 2-8 (multi-turn) | Yes | No |
+| `qa_no_abstract` | System + 2-8 | Yes | No |
 | `treatment_reasoning` | System + 2-8 | Yes | No |
 | `beyond_evidence` | System + 2 (single Q/A) | Yes | No |
 | `self_correction` | System + 4 (Q → wrong → pushback → correct) | Yes (in correction) | Yes (`train=false` on wrong) |
@@ -551,18 +518,15 @@ All training data uses **ShareGPT multi-turn conversation format:**
 
 DPO is the **second training stage** after SFT. While SFT teaches the model *what to say*, DPO teaches it *what NOT to say* by contrasting good and bad responses to the same prompt.
 
-**Training pipeline:** Base Qwen3 → SFT LoRA (Phase 3) → DPO continues training same LoRA (Phase 4) → **single merged adapter**
-
-The DPO notebook loads the SFT LoRA adapter and continues training its weights with DPO loss. The result is a **single LoRA adapter** relative to base Qwen3 — no adapter stacking or separate merging step required.
+**Training pipeline:** Base → SFT LoRA (Phase 3) → DPO continues training the same LoRA (Phase 4) → **single adapter**
 
 ### DPO Pair Sources
 
-| Source | Chosen (Good) | Rejected (Bad) | Training Signal |
-| ------ | ------------- | -------------- | --------------- |
-| **Grounding Rejects** | Re-generated strict-grounded answer (temp=0.2) | Hallucinated answer flagged by grounding check | Don't fabricate claims, statistics, or trial details |
-| **Beyond-Evidence** | Honest refusal answer | Newly generated hallucinated answer (temp=0.9) | Know the limits of evidence; refuse gracefully |
-| **Self-Correction** | Corrected answer with reasoning | Deliberately flawed answer | Fix mistakes when challenged; don't double down |
-| **Quality Gate** | High-quality answer with thinking blocks (>500 chars) | Borderline answer (no thinking or <300 chars) | Maintain clinical reasoning depth |
+| Source | Chosen (Good) | Rejected (Bad) | Training Signal | Pairs |
+| ------ | ------------- | -------------- | --------------- | ----: |
+| **Grounding Rejects** | Re-generated strict-grounded answer (temp=0.2) | Hallucinated answer flagged by grounding check | Don't fabricate claims, statistics, or trial details | 14,050 |
+| **Beyond-Evidence** | Honest refusal answer | Newly generated hallucinated answer (temp=0.9) | Know the limits of evidence; refuse gracefully | 14,660 |
+| **Self-Correction** | Corrected answer with reasoning | Deliberately flawed answer | Fix mistakes when challenged; don't double down | 2,941 |
 
 ### DPO Data Format
 
@@ -585,29 +549,28 @@ TRL chat-template format compatible with `DPOTrainer`:
 }
 ```
 
-### DPO Hyperparameters
+### DPO Hyperparameters (Qwen3.6-27B run)
 
 | Parameter | Value | Rationale |
 | --------- | ----- | --------- |
-| `beta` | 0.1 | Standard DPO temperature — balances preference strength |
+| `beta` | 0.05 | Gentle preference strength on a 27B base continuing an SFT adapter |
 | `learning_rate` | 5e-6 | ~40× lower than SFT (2e-4) — fine adjustment, not major shift |
-| `batch_size` | 1 × 8 grad_accum = 8 effective | Smaller batch — each sample has chosen+rejected |
-| `max_seq_length` | 4096 | Longer than SFT — DPO pairs include thinking blocks |
-| `warmup_ratio` | 0.1 | More warmup than SFT — DPO benefits from stability |
+| `max_seq_length` | 3072 | Pairs include thinking blocks; bounded for the reference-logprob pass |
 | `loss_type` | sigmoid | Standard DPO loss (Bradley-Terry model) |
 | `epochs` | 1 | Single pass — DPO overfits quickly |
+| Reference log-probs | cached to disk | Precomputed once, fingerprinted, resumable |
 
 ---
 
-## Configuration Reference
+## Configuration Reference (SFT datagen, current values)
 
 | Parameter | Value | Notes |
 | --------- | ----- | ----- |
 | `CHUNK_SIZE` | 1500 chars | Soft char limit per chunk (never breaks mid-sentence) |
 | `OVERLAP_SENTENCES` | 2 | Complete trailing sentences carried to next chunk |
 | `MAX_RECORDS` | 20,000 | Proportional random sampling cap on source records before chunking (0 = use all) |
-| `QUESTIONS_PER_CHUNK` | 3 | Questions per chunk per round (adjustable) |
-| `NUM_ROUNDS` | 1 | Question rounds per chunk — 1 = Mechanistic only, up to 3 (adjustable) |
+| `QUESTIONS_PER_CHUNK` | 3 | Questions per chunk per round |
+| `NUM_ROUNDS` | 3 | Mechanistic, Clinical Application, Critical Analysis |
 | `CONCURRENCY` | 50 | Max parallel API calls |
 | `TEMPERATURE_QUESTIONS` | 0.8 | Higher for diversity |
 | `TEMPERATURE_ANSWERS` | 0.4 | Lower for clinical accuracy |
@@ -617,20 +580,24 @@ TRL chat-template format compatible with `DPOTrainer`:
 | `BEYOND_EVIDENCE_SAMPLE_FRACTION` | 0.30 | Fraction of chunks used |
 | `SELF_CORRECTION_SAMPLE_FRACTION` | 0.15 | Fraction of QA sampled |
 | `TEST_CHUNKS_PER_ROUND` | 0 | Set to >0 to limit chunks per round for testing |
-| `DPO_MAX_PAIRS` | 9,000 | Stratified sample of DPO pairs for training (adjustable) |
+| `DPO_MAX_PAIRS` (DPO notebook) | 9,000 | Stratified sample of DPO pairs for training |
 
 ---
 
 ## Resume & Checkpointing
 
-The datagen notebook is fully resume-safe:
+The datagen notebooks are resume-safe:
 
-- **Per cancer type:** If `{type}.jsonl` exists in `qa/`, that type is skipped
-- **Per round:** Round-tracking JSON in `qa/_checkpoints/` (e.g., `pubmed_bone_cancer_rounds.json` → `{"0": 8715}`) records how many chunks each round processed; completed rounds are skipped on resume
-- **Per section:** Each anti-hallucination section checks for existing output files
-- **Continuation:** Checks for non-empty per-type continuation files
+- **Per cancer type:** if `{type}.jsonl` exists in `qa/`, that type is skipped
+- **Per round:** round-tracking JSON in `qa/_checkpoints/` records how many chunks each round processed
+- **Per key (since 2026-08-21):** Q&A generation, the grounding gate, and the DPO sources resume at
+  the last written key with batched flushes
+- **Per section:** each anti-hallucination section checks for existing output files
+- **Continuation:** checks for non-empty per-type continuation files
 
-To regenerate: delete the specific output file(s) and re-run the cell.
+To regenerate: delete the specific output file(s) and re-run the cell. Training notebooks
+resume from `checkpoint-*` automatically and keep their packed-token and reference-logprob
+caches across runs.
 
 ---
 
@@ -642,33 +609,38 @@ To regenerate: delete the specific output file(s) and re-run the cell.
 - ~14K beyond-evidence QA (30% sample)
 - ~21K self-correction sequences (15% sample)
 - ~47K continuation chunks (no API calls)
-- DPO preference pairs generated from grounding rejects + beyond-evidence + self-correction + quality gate
+- DPO preference pairs from grounding rejects + beyond-evidence + self-correction
 
-The training notebooks then consume this generated data:
-- **SFT:** Trains on the full ShareGPT output in the active Qwen3-14B SFT notebook
-- **Tool augmentation:** Defaults to the selected DPO pair count, currently 9,000 examples from `DPO_MAX_PAIRS = 9000`
-- **DPO:** `DPO_MAX_PAIRS = 9000` stratified sample of preference pairs (adjustable)
-
-### Observed Runtime & Cost (Default Settings)
+### Observed Runtime & Cost
 
 | Phase | Hardware | Time | Cost |
 | ----- | -------- | ---- | ---- |
 | Datagen (full 71K records, 3 Q × 1 round) | API (Qwen3-235B via OpenRouter) | ~2–3 days | ~$330 |
-| SFT (`MAX_RECORDS = 20000`) | NVIDIA DGX Spark (128 GB) | ~40 hrs | — |
-| DPO (`DPO_MAX_PAIRS = 9000`) | NVIDIA DGX Spark (128 GB) | ~14 hrs | — |
+| SFT, Qwen3-14B | NVIDIA DGX Spark (128 GB) | ~40 hrs | — |
+| DPO, Qwen3-14B (`DPO_MAX_PAIRS = 9000`) | NVIDIA DGX Spark (128 GB) | ~14 hrs | — |
 
-Datagen was run on the full cleaned corpus (71K records) for the reported cost/time. `MAX_RECORDS` can optionally limit the datagen input for faster/cheaper runs. SFT trains on whatever datagen produces in the active Qwen3-14B notebook; `DPO_MAX_PAIRS` caps preference pairs in the DPO notebook, and tool augmentation follows that selected pair count unless overridden.
+The current defaults (`MAX_RECORDS = 20,000`, three rounds) are tuned for a practical run that
+produces a quality LoRA without the full-corpus cost. Full-scale runs (71K × 5 Q × 3 rounds)
+are extremely API-intensive.
 
-### Scaling Up
+---
 
-All sampling variables are adjustable at the top of the datagen notebook:
+## History: experiments that are not the shipped pipeline
 
-- **More data:** Set `MAX_RECORDS = 0` to use all 71K cleaned records, or increase from 20K default
-- **More questions:** Increase `QUESTIONS_PER_CHUNK` (e.g., 5) or `NUM_ROUNDS` (up to 3: Mechanistic, Clinical, Critical)
-- **Quick test:** Set `TEST_CHUNKS_PER_ROUND` to a small number (e.g., 20) to limit chunks processed per round
-- **DPO pairs:** Adjust `DPO_MAX_PAIRS` in the DPO training notebook (default 5000, stratified by source)
-
-**Note:** Full-scale runs (71K records × 5 Q × 3 rounds) are extremely API-intensive. The defaults (20K records × 3 Q × 1 round) are tuned for a practical first run that produces a quality LoRA without excessive cost.
+- **MedGemma 27B (July 2026).** A text SFT run on `unsloth/medgemma-27b-text-it` succeeded
+  (`docs/medgemma_v3_sft_tuning_success_report_2026-07-13.md`, `docs/v3_slicing.md` for the
+  incremental-slice training it used), followed by a multimodal recovery plan
+  (`docs/oncology_lora_recovery_plan.md`, `docs/vision_base_model_switch.md`), a vision bridge
+  Open WebUI filter (`openwebui/filters/`) and compose files (`docs/dgx-compose*.yaml`). The
+  tool-calling work that came with it is written up in `docs/tool_calling_lessons_learned.md`.
+  The MedGemma notebooks and the tool-calling augmentation scripts were removed from the repo
+  on 2026-08-05 when the project returned to the Qwen line; the docs stay as the record.
+- **Vertex AI export.** `data/training-data/pubmed_oncologist_v2/vertex-ai/` holds the SFT
+  (33,349 rows) and DPO (31,670 rows) sets converted to the Gemma format used by the separate
+  Vertex AI fine-tuning project.
+- **Roadmap.** `docs/improvements.md` outlines three next-pass datagen improvements
+  (multi-document synthesis, among others); `docs/datagen_notebook_and_prompts.md` and
+  `docs/reverse_engineered_notebook_prompts.md` are blueprint-level writeups of the datagen.
 
 ---
 
@@ -677,8 +649,8 @@ All sampling variables are adjustable at the top of the datagen notebook:
 | Context | Packages |
 | ------- | -------- |
 | Cleaning script | `datasets`, `pandas`, `tqdm` |
-| Datagen notebook | `openai`, `tqdm`, `nest_asyncio`, `tiktoken`, `pysbd` |
-| Training notebooks | `unsloth`, `torch`, `transformers`, `trl`, `peft`, `bitsandbytes` (installed in Docker) |
+| Datagen notebooks | `openai`, `tqdm`, `nest_asyncio`, `tiktoken`, `pysbd` |
+| Training notebooks | `unsloth`, `torch`, `transformers`, `trl`, `peft`, `bitsandbytes` (installed in the container) |
 
 ---
 
@@ -688,26 +660,34 @@ All sampling variables are adjustable at the top of the datagen notebook:
 
 OpenRouter returns thinking model reasoning in a **separate `reasoning` field** (`msg.model_extra['reasoning']`), NOT inline `<think>` tags in `msg.content`. The helper function `_extract_with_reasoning(resp)` recombines these into `<think>...</think>` format for training data. Without this fix, all generated answers lack thinking blocks (0% thinking rate). Applied to `generate_answer()`, `generate_beyond_evidence_answer()`, `generate_correction()`, and `generate_treatment_reasoning()`.
 
+### Multimodal base
+
+Qwen3.6-27B carries a vision tower and MTP heads. A bare `target_modules` list adapts them too,
+and vLLM then refuses the adapter. The notebooks scope the adapter explicitly and assert it;
+`../docs/audit_adapters.py` checks every saved adapter.
+
 ---
 
 ## Changelog
 
 | Date | Change |
 | ---- | ------ |
-| 2026-03-04 | Initial project creation: directory structure, cleaning script, datagen notebook v1 |
-| 2026-03-04 | Added anti-hallucination sections (grounding, beyond-evidence, self-correction) |
-| 2026-03-04 | Fixed CancerGUIDE `load_dataset` config name requirement |
-| 2026-03-04 | Ran cleaning script: 71,343 PubMed + 316 CancerGUIDE records |
-| 2026-03-04 | Replaced regex chunking with sentence-aware chunking (pySBD + medical abbreviation protection) |
-| 2026-03-04 | Changed overlap from raw chars to complete trailing sentences (`OVERLAP_SENTENCES = 2`) |
-| 2026-03-04 | **CRITICAL FIX:** OpenRouter reasoning field — added `_extract_with_reasoning()` |
-| 2026-03-04 | Added DPO preference pair collection — 4 pair sources |
-| 2026-03-04 | Created DPO training notebook |
-| 2026-03-10 | Migrated datagen pipeline from v1 to v2 (VS Code + JupyterLab notebooks) |
-| 2026-03-10 | Created SFT training notebook |
-| 2026-03-10 | QA round 0 checkpoints generated for all 10 cancer types |
-| 2026-03-10 | Merged PROJECT_SUMMARY.md into README.md |
-| 2026-03-10 | Consolidated notebooks: single `pubmed_datagen.ipynb`, moved old versions to `notebooks/old/` (gitignored) |
+| 2026-03-04 | Project created: cleaning script, datagen notebook v1, anti-hallucination sections, sentence-aware chunking, OpenRouter reasoning-field fix, DPO pair collection |
+| 2026-03-10 | Datagen v2 (JupyterLab), SFT notebook, round-0 checkpoints for all 10 cancer types |
+| 2026-03-18 / 03-30 | Qwen3-14B SFT and DPO adapters trained |
+| 2026-07-13 | MedGemma 27B text SFT run succeeded; multimodal recovery work begins |
+| 2026-08-05 | MedGemma and tool-calling residue removed; project returns to the Qwen line. Abstract-free Q&A correction pass adds 8,000 rows to the SFT set (33,349 → 40,020) |
+| 2026-08-07 / 08-09 | Qwen3.6-27B SFT and DPO adapters trained |
+| 2026-08-16 | Hugging Face model card written; adapter published as `beaudamore/pubmed-oncology-lora-qwen3.6-27b` |
+| 2026-08-21 | Datagen: `NUM_ROUNDS = 3`, `MAX_RECORDS = 20,000`, key-level resume and batched flush for Q&A, grounding gate and DPO sources; dedupe in assembly |
+| 2026-08-25 | Vision/MTP tower scoping fixed across the Qwen3.6 notebooks |
+
+## Related
+
+- [openwebui-pubmed-tool](https://github.com/beaudamore/openwebui-pubmed-tool) — Open WebUI tool: PubMed search, PMID dedupe, per-article knowledge-base archiving with NLP entity extraction
+- [openwebui-feed-ingest-pipe](https://github.com/beaudamore/openwebui-feed-ingest-pipe) — Open WebUI pipe that fills the same knowledge base on a schedule via Automations, with no LLM call
+- [Hugging Face model card](https://huggingface.co/beaudamore/pubmed-oncology-lora-qwen3.6-27b) — the Qwen3.6-27B adapter (source in `hf/README.md`)
+- [damore.ai: PubMed oncology fine-tuning pipeline](https://www.damore.ai/blog/pubmed-oncology-fine-tuning-pipeline) and [PubMed deep research tool](https://www.damore.ai/blog/pubmed-deep-research-tool)
 
 ## License
 
