@@ -49,20 +49,6 @@ PROJECT_ROOT = SCRIPT_DIR.parent
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "data" / "source-clean"
 RAW_DIR = PROJECT_ROOT / "data" / "source-raw"
 
-# ── PubMed CSV filenames → cancer type labels ────────────────────────
-PUBMED_FILES = {
-    "bone_cancer_samples.csv": "bone_cancer",
-    "brain_tumour_samples.csv": "brain_tumour",
-    "breast_cancer_samples.csv": "breast_cancer",
-    "colon_cancer_samples.csv": "colon_cancer",
-    "gastric_cancer_samples.csv": "gastric_cancer",
-    "kidney_cancer_samples.csv": "kidney_cancer",
-    "lung_cancer_samples.csv": "lung_cancer",
-    "ovarian_cancer_samples.csv": "ovarian_cancer",
-    "prostate_cancer_samples.csv": "prostate_cancer",
-    "skin_cancer_samples.csv": "skin_cancer",
-}
-
 # ── Cleaning thresholds ──────────────────────────────────────────────
 MIN_ABSTRACT_CHARS = 200       # Drop abstracts shorter than this
 MIN_TITLE_CHARS = 10           # Drop entries with no real title
